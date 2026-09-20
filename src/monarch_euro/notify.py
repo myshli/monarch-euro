@@ -80,6 +80,8 @@ def _hint(errors: list[str]) -> str | None:
     joined = " ".join(errors).lower()
     if "consent" in joined or "re-run" in joined and "link" in joined:
         return "Bank consent lapsed - run: monarch-euro link n26"
+    if "csrf failed" in joined or "referer" in joined:
+        return "CSRF rejected - MONARCH_CSRF_TOKEN no longer matches the session cookie"
     if "captcha" in joined or "authentication credentials" in joined or "401" in joined:
         return "Monarch session expired - re-copy session_id and csrftoken into .env"
     if "rate limit" in joined or "429" in joined:

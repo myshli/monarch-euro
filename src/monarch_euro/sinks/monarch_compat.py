@@ -91,6 +91,26 @@ def build_client(token: str, state_dir: Path, timeout: int = 30) -> MonarchMoney
     return client
 
 
+# Only these carry identity. A browser's Cookie header also holds analytics
+# and Cloudflare cookies; `__cf_bm` in particular lives about 30 minutes, so
+# storing it means keeping a value that is stale almost immediately. Monarch
+# accepts the request without it, and a stale bot token is worse than none.
+AUTH_COOKIES = ("session_id", "sessionid", "csrftoken", "cf_clearance")
+
+
+def clean_cookie_header(raw: str) -> str:
+    """Keep only the cookies that authenticate; drop analytics and churn."""
+    kept = []
+    for part in raw.split(";"):
+        part = part.strip()
+        if not part or "=" not in part:
+            continue
+        name = part.split("=", 1)[0].strip()
+        if name in AUTH_COOKIES:
+            kept.append(part)
+    return "; ".join(kept) if kept else raw.strip()
+
+
 def build_raw_cookie_client(
     cookie_header: str,
     csrf_token: str,
@@ -108,7 +128,7 @@ def build_raw_cookie_client(
     client = MonarchMoney(timeout=timeout)
     client.set_token(csrf_token)
     headers = _common_headers(state_dir)
-    headers.update({"Cookie": cookie_header.strip(), "x-csrftoken": csrf_token})
+    headers.update({"Cookie": clean_cookie_header(cookie_header), "x-csrftoken": csrf_token})
     client._headers.pop("Authorization", None)
     client._headers.update(headers)
     return client

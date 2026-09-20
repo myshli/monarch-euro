@@ -434,3 +434,35 @@ def test_configured_bank_without_a_session_is_reported(tmp_path, monkeypatch):
     )
     result = pipeline.sync(cfg)
     assert any("not linked on this machine" in e for e in result.errors)
+
+
+# -- cookie hygiene --------------------------------------------------------
+
+def test_short_lived_and_analytics_cookies_are_dropped():
+    """__cf_bm lives ~30 minutes, so storing it means keeping a value that is
+    stale almost immediately. Monarch accepts the request without it."""
+    from monarch_euro.sinks.monarch_compat import clean_cookie_header
+
+    raw = ("ajs_anonymous_id=abc; session_id=THESESSION; csrftoken=THECSRF; "
+           "__stripe_mid=x; cf_clearance=cfc; __cf_bm=short; _dd_s=y")
+    cleaned = clean_cookie_header(raw)
+    assert "session_id=THESESSION" in cleaned
+    assert "csrftoken=THECSRF" in cleaned
+    assert "cf_clearance=cfc" in cleaned
+    assert "__cf_bm" not in cleaned
+    assert "ajs_anonymous_id" not in cleaned
+    assert "_dd_s" not in cleaned
+
+
+def test_unrecognised_cookie_header_is_left_alone():
+    """Better to send something unexpected than nothing at all."""
+    from monarch_euro.sinks.monarch_compat import clean_cookie_header
+
+    assert clean_cookie_header("weird=value") == "weird=value"
+
+
+def test_csrf_failure_gets_its_own_hint():
+    from monarch_euro.notify import format_failure
+
+    msg = format_failure("vps", ["403 CSRF Failed: Referer checking failed"], 0, 0)
+    assert "CSRF" in msg and "no longer matches" in msg
