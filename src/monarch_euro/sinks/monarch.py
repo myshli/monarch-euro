@@ -90,6 +90,23 @@ class MonarchSink:
         """
         if self._logged_in:
             return
+
+        missing = [
+            name
+            for name, value in (
+                ("MONARCH_EMAIL", self.email),
+                ("MONARCH_PASSWORD", self.password),
+                ("MONARCH_MFA_SECRET", self.mfa_secret),
+            )
+            if not value
+        ]
+        if missing:
+            raise MonarchError(
+                f"Cannot log in to Monarch: {', '.join(missing)} not set. "
+                f"MONARCH_MFA_SECRET is the TOTP seed from Settings -> Security, "
+                f"not a six-digit code."
+            )
+
         try:
             self._run(
                 self._mm.login(

@@ -144,7 +144,12 @@ def sync(config: Config) -> SyncResult:
                     log.exception(message)
                     result.errors.append(message)
 
-            if config.wise_accounts:
+            if config.wise_accounts and not config.wise_token:
+                log.warning(
+                    "Skipping Wise: WISE_ACCOUNTS is configured but WISE_TOKEN is "
+                    "empty. Generate a token in Wise under Settings -> API tokens."
+                )
+            elif config.wise_accounts:
                 try:
                     _sync_wise(
                         config=config,

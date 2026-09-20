@@ -106,6 +106,12 @@ def cmd_banks(config: Config, args: argparse.Namespace) -> int:
 
 
 def cmd_link(config: Config, args: argparse.Namespace) -> int:
+    """Authorize one bank.
+
+    Runs in two steps so it works without a TTY - on a VPS over SSH, or from
+    an agent - as well as interactively. Without --code it prints the
+    authorization URL; with --code it exchanges the result for a session.
+    """
     link = next((l for l in config.links if l.key == args.key), None)
     if link is None:
         print(f"No ACCOUNT_LINKS entry with key {args.key!r}. "
@@ -113,33 +119,38 @@ def cmd_link(config: Config, args: argparse.Namespace) -> int:
         return 1
 
     with _client(config) as client:
-        url, state = client.start_authorization(
-            aspsp_name=link.aspsp_name,
-            aspsp_country=link.aspsp_country,
-            valid_days=args.valid_days,
-        )
-        print("\nOpen this URL in a browser and complete the bank's login:\n")
-        print(f"  {url}\n")
-        print("You will be redirected to a URL containing a `code` parameter.")
-        print("Paste the full redirect URL (or just the code) below.\n")
-
-        pasted = input("redirect URL or code: ").strip()
-        if not pasted:
-            print("Nothing pasted; aborting.")
-            return 1
-
-        code = pasted
-        if pasted.startswith("http"):
-            query = parse_qs(urlparse(pasted).query)
-            returned_state = (query.get("state") or [None])[0]
-            if returned_state and returned_state != state:
-                print(f"WARNING: state mismatch (expected {state}, got {returned_state}). "
-                      "This can happen if you ran `link` twice; continuing.")
-            code_values = query.get("code")
-            if not code_values:
+        code = args.code
+        if code and code.startswith("http"):
+            code = _code_from_url(code)
+            if code is None:
                 print("That URL has no `code` parameter.")
                 return 1
-            code = code_values[0]
+
+        if not code:
+            url, state = client.start_authorization(
+                aspsp_name=link.aspsp_name,
+                aspsp_country=link.aspsp_country,
+                valid_days=args.valid_days,
+            )
+            print("\nOpen this URL in a browser and complete the bank's login:\n")
+            print(f"  {url}\n")
+            print("You will be redirected to a URL containing a `code` parameter.")
+
+            if not sys.stdin.isatty():
+                print(f"\nThen finish with:\n  monarch-euro link {args.key} --code '<redirect URL>'")
+                return 0
+
+            print("Paste the full redirect URL (or just the code) below.\n")
+            pasted = input("redirect URL or code: ").strip()
+            if not pasted:
+                print("Nothing pasted; aborting.")
+                return 1
+            code = pasted
+            if pasted.startswith("http"):
+                code = _code_from_url(pasted)
+                if code is None:
+                    print("That URL has no `code` parameter.")
+                    return 1
 
         payload = client.create_session(code)
         session_id = payload.get("session_id")
@@ -173,6 +184,12 @@ def cmd_link(config: Config, args: argparse.Namespace) -> int:
               f"{account.get('currency') or ''}")
     print("\nRun `monarch-euro sync` to import transactions.")
     return 0
+
+
+def _code_from_url(pasted: str) -> str | None:
+    query = parse_qs(urlparse(pasted).query)
+    values = query.get("code")
+    return values[0] if values else None
 
 
 def cmd_sync(config: Config, args: argparse.Namespace) -> int:
@@ -339,6 +356,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("key", help="ACCOUNT_LINKS key, e.g. n26")
     p.add_argument("--valid-days", type=int, default=180,
                    help="consent lifetime; PSD2 caps this at 180 for most banks")
+    p.add_argument("--code", help="the redirect URL or its `code`, to finish a started link")
     p.set_defaults(func=cmd_link)
 
     p = sub.add_parser("unlink", help="close a bank session")

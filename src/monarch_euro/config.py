@@ -196,8 +196,9 @@ def load_config(dotenv: Path | None = None) -> Config:
 
     wise_key_raw = os.environ.get("WISE_PRIVATE_KEY_PATH", "").strip()
     wise_key_path = Path(wise_key_raw).expanduser() if wise_key_raw else None
-    if wise_accounts and not os.environ.get("WISE_TOKEN", "").strip():
-        raise ConfigError("WISE_ACCOUNTS is set but WISE_TOKEN is empty.")
+    # A missing Wise token is not a configuration error: it only means the
+    # Wise leg cannot run yet. Failing here would block `link`, `status` and
+    # every other command that has nothing to do with Wise.
 
     return Config(
         eb_application_id=eb_application_id,
@@ -207,9 +208,11 @@ def load_config(dotenv: Path | None = None) -> Config:
         wise_accounts=wise_accounts,
         eb_base_url=os.environ.get("EB_BASE_URL", "https://api.enablebanking.com").rstrip("/"),
         eb_redirect_url=eb_redirect_url,
-        monarch_email=_require("MONARCH_EMAIL"),
-        monarch_password=_require("MONARCH_PASSWORD"),
-        monarch_mfa_secret=_require("MONARCH_MFA_SECRET"),
+        # Validated by MonarchSink when it actually logs in, so commands that
+        # never touch Monarch (link, banks, status, wise-probe) still run.
+        monarch_email=os.environ.get("MONARCH_EMAIL", "").strip(),
+        monarch_password=os.environ.get("MONARCH_PASSWORD", "").strip(),
+        monarch_mfa_secret=os.environ.get("MONARCH_MFA_SECRET", "").strip(),
         target_currency=os.environ.get("TARGET_CURRENCY", "USD").upper(),
         fx_base_url=os.environ.get("FX_BASE_URL", "https://api.frankfurter.dev/v1").rstrip("/"),
         note_original_amount=_flag("NOTE_ORIGINAL_AMOUNT", True),
