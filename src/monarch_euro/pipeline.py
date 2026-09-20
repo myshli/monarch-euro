@@ -13,6 +13,7 @@ from .fx import FxConverter
 from .models import SourceTransaction
 from .sinks.monarch import MonarchSink
 from .sources.enablebanking import (
+    ApplicationNotActiveError,
     ConsentExpiredError,
     EnableBankingClient,
     extract_accounts,
@@ -129,6 +130,10 @@ def sync(config: Config) -> SyncResult:
                         date_from=date_from,
                         result=result,
                     )
+                except ApplicationNotActiveError as exc:
+                    message = f"[{link_key}] {exc}"
+                    log.error(message)
+                    result.errors.append(message)
                 except ConsentExpiredError as exc:
                     message = f"[{link_key}] consent expired: {exc}"
                     log.error(message)

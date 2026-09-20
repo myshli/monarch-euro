@@ -35,6 +35,10 @@ class EnableBankingError(RuntimeError):
     pass
 
 
+class ApplicationNotActiveError(EnableBankingError):
+    """The Enable Banking application has not been activated yet."""
+
+
 class ConsentExpiredError(EnableBankingError):
     """The PSU consent lapsed and the bank must be re-authorized in a browser."""
 
@@ -117,10 +121,23 @@ class EnableBankingClient:
         resp = self._client.request(method, url, headers=headers, **kwargs)
 
         if resp.status_code in (401, 403):
+            # A 403 covers several distinct causes and the remedy differs for
+            # each, so surface the API's own message rather than guessing.
+            try:
+                detail = (resp.json() or {}).get("message") or resp.text[:400]
+            except ValueError:
+                detail = resp.text[:400]
+
+            lowered = detail.lower()
+            if "not active" in lowered:
+                raise ApplicationNotActiveError(
+                    f"{method} {path}: {detail}. The Enable Banking application has "
+                    f"not been activated yet. In the Control Panel, use 'Activate by "
+                    f"linking accounts' to whitelist your own accounts."
+                )
             raise ConsentExpiredError(
-                f"{method} {path} returned {resp.status_code}. The bank consent has "
-                f"most likely expired - re-run `monarch-euro link` for this bank. "
-                f"Body: {resp.text[:400]}"
+                f"{method} {path} returned {resp.status_code}: {detail}. If this is a "
+                f"consent problem, re-run `monarch-euro link` for the affected bank."
             )
         if resp.status_code >= 400:
             raise EnableBankingError(
