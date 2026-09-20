@@ -245,19 +245,44 @@ class WiseClient:
             return None
 
         details = raw.get("details") or {}
-        merchant = (details.get("merchant") or {}).get("name")
+
+        # Several of these arrive as objects rather than strings; reading them
+        # blindly stringifies a dict into the merchant name.
+        def _name(value: Any) -> str | None:
+            if isinstance(value, dict):
+                value = value.get("name")
+            if value is None:
+                return None
+            text = str(value).strip()
+            return text or None
+
         counterparty = (
-            merchant
-            or details.get("senderName")
-            or details.get("recipient")
-            or details.get("payerName")
+            _name(details.get("merchant"))
+            or _name(details.get("recipient"))
+            or _name(details.get("senderName"))
+            or _name(details.get("payerName"))
         )
         description = (
-            details.get("description")
-            or details.get("paymentReference")
+            _name(details.get("description"))
+            or _name(details.get("paymentReference"))
             or counterparty
             or "Wise transaction"
         )
+
+        # Wise reports both sides of a conversion, so when one side is already
+        # in a currency we care about we can skip approximating it.
+        exact_amount = None
+        exact_currency = None
+        exchange = raw.get("exchangeDetails") or {}
+        for side in ("fromAmount", "toAmount"):
+            block = exchange.get(side) or {}
+            side_currency = (block.get("currency") or "").upper()
+            side_value = block.get("value")
+            if side_currency and side_value is not None and side_currency != currency:
+                magnitude = _decimal(side_value).copy_abs()
+                exact_amount = magnitude if amount >= 0 else -magnitude
+                exact_currency = side_currency
+                break
 
         return SourceTransaction(
             account_key=account_key,
@@ -270,6 +295,8 @@ class WiseClient:
             reference=raw.get("referenceNumber"),
             pending=False,
             raw=raw,
+            exact_amount=exact_amount,
+            exact_currency=exact_currency,
         )
 
 def assign_occurrences(transactions: list[SourceTransaction]) -> list[SourceTransaction]:

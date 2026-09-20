@@ -147,6 +147,28 @@ class FxConverter:
 
     def convert(self, txn: SourceTransaction) -> ConvertedTransaction:
         currency = txn.currency.upper()
+
+        # An executed rate from the source beats a daily reference average.
+        if (
+            txn.exact_amount is not None
+            and (txn.exact_currency or "").upper() == self.target
+            and currency != self.target
+        ):
+            exact = txn.exact_amount.quantize(CENTS, rounding=ROUND_HALF_UP)
+            rate = (
+                (exact / txn.amount).quantize(Decimal("0.000001"))
+                if txn.amount
+                else None
+            )
+            return ConvertedTransaction(
+                source=txn,
+                amount=exact,
+                currency=self.target,
+                fx_rate=rate,
+                fx_rate_date=txn.booked_on,
+                exact=True,
+            )
+
         if currency == self.target:
             return ConvertedTransaction(
                 source=txn,

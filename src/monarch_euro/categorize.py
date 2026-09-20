@@ -45,11 +45,19 @@ DEFAULT_RULES: list[dict[str, str]] = [
     # Money moved in from another account you also track would otherwise be
     # counted twice - once as income here, once as spending there - and inflate
     # both sides of every cash-flow report.
-    {"match": r"thank you for adding funds|adding funds|top[- ]?up(?! fee)|"
+    # The source's own transaction type is checked first: Wise reports a
+    # top-up as MONEY_ADDED regardless of how the description is worded, and
+    # the wording does vary ("Topped up account" defeats a /top[- ]?up/ match).
+    {"code": r"^MONEY_ADDED$", "merchant": "Account Top-up", "category": "Transfer"},
+    {"match": r"thank you for adding funds|adding funds|topp?ed up|top[- ]?up(?! fee)|"
               r"from your .*account|einzahlung|\bumbuchung\b",
      "merchant": "Account Top-up", "category": "Transfer"},
     {"match": r"\bwise\b|transferwise|revolut|\bn26\b.*transfer",
      "category": "Transfer"},
+
+    # -- Schooling and childcare
+    {"match": r"\bschool\b|\bschule\b|kita\b|kindergarten|tuition|\bcr(è|e)che\b",
+     "category": "Child Care"},
 
     # -- Fees: the bank's own ISO 20022 code is authoritative where present.
     {"code": r"FEES", "category": "Financial & Legal Services"},
@@ -203,8 +211,17 @@ class Categorizer:
 
 
 def transaction_code(raw: dict) -> str | None:
-    """Flatten a Berlin Group bank_transaction_code into "DESC/CODE/SUBCODE"."""
+    """Flatten a source's structured transaction type into a matchable string.
+
+    Berlin Group (Enable Banking) gives bank_transaction_code; Wise gives
+    details.type. Both are far more reliable than the free-text description,
+    which varies by bank, language and payment rail.
+    """
     block = raw.get("bank_transaction_code") or {}
     parts = [block.get("description"), block.get("code"), block.get("sub_code")]
     joined = "/".join(str(p) for p in parts if p)
-    return joined or None
+    if joined:
+        return joined
+
+    wise_type = (raw.get("details") or {}).get("type")
+    return str(wise_type) if wise_type else None

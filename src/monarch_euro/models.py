@@ -27,6 +27,15 @@ class SourceTransaction:
     reference: str | None
     pending: bool
     raw: dict
+    exact_amount: Decimal | None = None
+    """The amount in the pipeline's target currency, when the source knows it.
+
+    Wise reports both sides of a currency conversion, so a EUR top-up funded
+    from USD carries the real USD figure. Using it beats converting the EUR
+    side at an ECB daily average, which is only ever an approximation of a
+    rate that actually executed.
+    """
+    exact_currency: str | None = None
     occurrence: int = 0
     """Ordinal among otherwise-identical transactions on the same day.
 
@@ -71,6 +80,8 @@ class ConvertedTransaction:
     currency: str
     fx_rate: Decimal | None
     fx_rate_date: date | None
+    exact: bool = False
+    """True when the rate actually executed, rather than an ECB daily average."""
 
     @property
     def converted(self) -> bool:
@@ -85,8 +96,9 @@ class ConvertedTransaction:
         """
         if not include_original or not self.converted:
             return None
+        source = "Wise" if self.exact else "ECB"
         return (
             f"{self.source.currency} {self.source.amount:.2f} "
-            f"@ {self.fx_rate} ECB {self.fx_rate_date:%Y-%m-%d} "
+            f"@ {self.fx_rate} {source} {self.fx_rate_date:%Y-%m-%d} "
             f"= {self.currency} {self.amount:.2f}"
         )

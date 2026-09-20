@@ -169,3 +169,107 @@ def test_malformed_wise_accounts_are_rejected(monkeypatch):
     monkeypatch.setenv("WISE_ACCOUNTS", "EUR")
     with pytest.raises(ConfigError, match="Malformed"):
         _parse_wise_accounts()
+
+
+# -- regressions found against live data -----------------------------------
+
+def test_recipient_object_does_not_become_a_stringified_dict():
+    """details.recipient is an object; reading it blindly produced
+    "{'name': ' Berlin Metropolitan School gG" as the merchant name."""
+    raw = {
+        "type": "DEBIT",
+        "date": "2026-09-20T07:58:02.361939Z",
+        "amount": {"value": -400.0, "currency": "EUR"},
+        "referenceNumber": "TRANSFER-2381871428",
+        "details": {
+            "type": "TRANSFER",
+            "description": "Sent money to  Berlin Metropolitan School gGmbH",
+            "recipient": {"name": " Berlin Metropolitan School gGmbH",
+                          "bankAccount": "DE37 1009 0000 7274 7170 03"},
+        },
+    }
+    txn = normalize(raw)
+    assert txn.counterparty == "Berlin Metropolitan School gGmbH"
+    assert "{" not in txn.counterparty
+
+
+def test_money_added_is_a_transfer_whatever_the_wording():
+    """"Topped up account" defeats a /top[- ]?up/ text match, so the
+    structured details.type must carry it."""
+    from monarch_euro.categorize import Categorizer, load_rules, transaction_code
+
+    raw = {
+        "type": "CREDIT",
+        "date": "2026-09-20T07:55:41.094832Z",
+        "amount": {"value": 1000.0, "currency": "EUR"},
+        "referenceNumber": "TRANSFER-2381869102",
+        "details": {"type": "MONEY_ADDED", "description": "Topped up account"},
+    }
+    txn = normalize(raw)
+    cat = Categorizer(load_rules(None))
+    _, category = cat.apply(txn.description, txn.counterparty, transaction_code(raw))
+    assert category == "Transfer"
+
+
+def test_exchange_details_supply_an_exact_target_amount():
+    """A EUR top-up funded from USD knows the real USD figure; an ECB daily
+    average is only an approximation of a rate that actually executed."""
+    raw = {
+        "type": "CREDIT",
+        "date": "2026-09-20T07:55:41.094832Z",
+        "amount": {"value": 1000.0, "currency": "EUR"},
+        "referenceNumber": "T-1",
+        "details": {"type": "MONEY_ADDED", "description": "Topped up account"},
+        "exchangeDetails": {
+            "toAmount": {"value": 1000.0, "currency": "EUR"},
+            "fromAmount": {"value": 1148.4, "currency": "USD"},
+            "rate": 0.87078,
+        },
+    }
+    txn = normalize(raw)
+    assert txn.exact_amount == Decimal("1148.4")
+    assert txn.exact_currency == "USD"
+
+
+def test_exact_amount_follows_the_transaction_sign():
+    raw = {
+        "type": "DEBIT",
+        "date": "2026-09-20T07:55:41.094832Z",
+        "amount": {"value": -1000.0, "currency": "EUR"},
+        "referenceNumber": "T-2",
+        "details": {"type": "TRANSFER"},
+        "exchangeDetails": {
+            "toAmount": {"value": 1000.0, "currency": "EUR"},
+            "fromAmount": {"value": 1148.4, "currency": "USD"},
+        },
+    }
+    assert normalize(raw).exact_amount == Decimal("-1148.4")
+
+
+def test_rows_without_exchange_details_carry_no_exact_amount():
+    assert normalize(card_purchase()).exact_amount is None
+
+
+def test_fx_prefers_the_executed_rate_over_the_ecb_average(tmp_path):
+    from monarch_euro.fx import FxConverter
+    from monarch_euro.store import Store
+
+    raw = {
+        "type": "CREDIT",
+        "date": "2026-09-20T07:55:41.094832Z",
+        "amount": {"value": 1000.0, "currency": "EUR"},
+        "referenceNumber": "T-3",
+        "details": {"type": "MONEY_ADDED"},
+        "exchangeDetails": {
+            "toAmount": {"value": 1000.0, "currency": "EUR"},
+            "fromAmount": {"value": 1148.4, "currency": "USD"},
+        },
+    }
+    txn = normalize(raw)
+    with Store(tmp_path / "s.sqlite3") as store:
+        store.put_fx_rate("EUR", "USD", date(2026, 9, 20), Decimal("1.146"), date(2026, 9, 18))
+        converted = FxConverter(store=store, target_currency="USD").convert(txn)
+
+    assert converted.amount == Decimal("1148.40")   # not 1146.00
+    assert converted.exact is True
+    assert "Wise" in converted.note(include_original=True)
