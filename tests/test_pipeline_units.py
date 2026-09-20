@@ -334,3 +334,19 @@ def test_transaction_code_flattens_berlin_group_block():
     raw = {"bank_transaction_code": {"description": "PMNT", "code": "MDOP", "sub_code": "FEES"}}
     assert transaction_code(raw) == "PMNT/MDOP/FEES"
     assert transaction_code({}) is None
+
+
+# -- rule/category cross-check ---------------------------------------------
+
+def test_unknown_rule_categories_are_detected():
+    """A rule naming a missing category matches but assigns nothing useful."""
+    cat = Categorizer(load_rules(None))
+    available = {"Groceries", "Travel"}
+    unknown = cat.unknown_categories(available)
+    assert "Groceries" not in unknown
+    assert "Transfer" in unknown
+
+
+def test_no_unknown_categories_when_all_exist():
+    cat = Categorizer(load_rules(None))
+    assert cat.unknown_categories(cat.referenced_categories()) == set()

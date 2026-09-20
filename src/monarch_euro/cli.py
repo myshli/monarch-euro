@@ -77,6 +77,29 @@ def cmd_doctor(config: Config, args: argparse.Namespace) -> int:
             monarch.refresh_metadata()
             print(f"  OK  {len(monarch.account_names())} accounts, "
                   f"{len(monarch.category_names())} categories")
+
+            from .categorize import Categorizer, load_rules
+            from .pipeline import _rules_path
+
+            categorizer = Categorizer(load_rules(_rules_path(config)))
+            available = set(monarch.category_names())
+            unknown = categorizer.unknown_categories(available)
+            if unknown:
+                ok = False
+                print(f"\n  WARN  {len(unknown)} rule category(ies) do not exist in "
+                      f"Monarch. Rules naming them will silently fall back to "
+                      f"{monarch.default_category!r}:")
+                for name in sorted(unknown):
+                    print(f"          - {name!r}")
+                print("        Fix them in state/rules.json, or create the categories "
+                      "in Monarch.")
+            else:
+                print(f"    all {len(categorizer.referenced_categories())} rule "
+                      f"categories exist in Monarch")
+
+            print("\n  Your Monarch categories:")
+            for name in monarch.category_names():
+                print(f"    {name}")
             for link in config.links:
                 marker = "found" if link.monarch_account_name in monarch.account_names() else \
                     "missing (will be created on first sync)"

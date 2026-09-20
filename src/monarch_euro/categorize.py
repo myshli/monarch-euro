@@ -162,6 +162,20 @@ class Categorizer:
     def __init__(self, rules: list[Rule]) -> None:
         self.rules = rules
 
+    def referenced_categories(self) -> set[str]:
+        """Every category name the rules can assign."""
+        return {rule.category for rule in self.rules if rule.category}
+
+    def unknown_categories(self, available: set[str]) -> set[str]:
+        """Rule categories that do not exist in Monarch.
+
+        A rule naming a missing category still matches, but the assignment
+        falls back to Uncategorized - so the rule looks like it works while
+        quietly doing nothing. Surfacing the mismatch is the difference
+        between a typo you fix in a minute and months of miscategorized data.
+        """
+        return {c for c in self.referenced_categories() if c not in available}
+
     def apply(
         self,
         description: str,
