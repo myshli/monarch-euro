@@ -156,11 +156,45 @@ The ledger means a later normal run will not re-import any of it.
 | `unlink <key>` | Close a session; the dedupe ledger is preserved |
 | `sync` | Fetch, convert and push |
 | `status` | Sessions, consent expiry, mapped accounts, recent runs |
+| `monarch-cookie` | Refresh the Monarch session from a pasted Cookie header |
 | `wise-probe` | List Wise profiles/balances and test statement access |
 | `rules-init` | Write a starter `rules.json` |
 
 `status` warns when a consent is within a week of expiring — worth watching,
 since an expired consent is the one failure that needs you at a browser.
+
+## Monarch authentication
+
+Monarch answers programmatic password logins with `CAPTCHA_REQUIRED`, but the
+CAPTCHA only guards logging *in*. Its web app authenticates every request with
+a session cookie and a CSRF token and no bearer at all, so reusing a session
+you established in a browser never encounters it.
+
+When the session lapses, syncs fail and you get a Telegram alert. Refresh it
+in one paste rather than editing `.env`:
+
+1. In Chrome on app.monarch.com: DevTools → Network → any `graphql` request →
+   Request Headers → copy the whole `Cookie:` line
+2. Then:
+
+```bash
+monarch-euro monarch-cookie          # paste at the prompt
+# or, over SSH:
+pbpaste | ssh you@vps 'cd /opt/monarch-euro && sudo -u monarch .venv/bin/monarch-euro monarch-cookie'
+```
+
+It keeps only `session_id` and `csrftoken` — the rest of a browser's Cookie
+header is analytics and Cloudflare churn, and `__cf_bm` in particular expires
+in about thirty minutes, so storing it means keeping a value that is stale
+almost immediately.
+
+The new session is **validated against the live API before anything is
+written**, so a bad paste leaves a working configuration alone rather than
+replacing it with one that fails at 07:30 tomorrow. The previous `.env` is
+backed up alongside it.
+
+Session lifetime is fixed from login and does not slide, so syncing often will
+not extend it. `csrftoken` is good for a year.
 
 ## Categorization
 

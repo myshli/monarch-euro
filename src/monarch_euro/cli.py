@@ -11,6 +11,7 @@ from urllib.parse import parse_qs, urlparse
 from .categorize import write_default_rules
 from .notify import format_failure, send
 from .config import Config, ConfigError, load_config
+from .envfile import EnvFileError, parse_cookie_header, update as env_update
 from .pipeline import _rules_path, refresh_accounts, sync
 from .sinks.csvfile import CsvSink
 from .sinks.monarch import MonarchSink
@@ -556,6 +557,75 @@ def cmd_export(config: Config, args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_monarch_cookie(config: Config, args: argparse.Namespace) -> int:
+    """Refresh the Monarch session from a pasted Cookie header.
+
+    Validated against the live API before anything is written, so a bad paste
+    leaves a working configuration untouched rather than replacing it with
+    something that fails at 07:30 tomorrow.
+    """
+    from pathlib import Path
+
+    from .sinks.monarch import MonarchError, MonarchSink
+
+    raw = args.cookie
+    if not raw:
+        if sys.stdin.isatty():
+            print("Paste the Cookie header from DevTools -> Network -> any")
+            print("`graphql` request -> Request Headers -> Cookie, then press Enter:\n")
+        raw = sys.stdin.readline()
+    if not raw or not raw.strip():
+        print("Nothing pasted.")
+        return 1
+
+    cookies = parse_cookie_header(raw)
+    session = cookies.get("session_id") or cookies.get("sessionid")
+    csrf = cookies.get("csrftoken")
+
+    if not session or not csrf:
+        print("That does not look like a Monarch Cookie header.")
+        print(f"  found: {', '.join(sorted(cookies)) or 'nothing'}")
+        print("  need:  session_id and csrftoken")
+        return 1
+
+    cookie_name = "session_id" if "session_id" in cookies else "sessionid"
+    header = f"{cookie_name}={session}; csrftoken={csrf}"
+
+    print(f"Parsed {len(cookies)} cookie(s); keeping {cookie_name} and csrftoken.")
+    print("Checking them against Monarch before writing...")
+
+    with MonarchSink(
+        email="", password="", mfa_secret="",
+        session_path=config.monarch_session_path,
+        cookie_header=header, csrf_token=csrf, dry_run=True,
+    ) as monarch:
+        try:
+            monarch.refresh_metadata()
+        except Exception as exc:
+            print(f"\nREJECTED - {exc}")
+            print("Nothing was written; your existing configuration is untouched.")
+            return 1
+        accounts = len(monarch.account_names())
+
+    env_path = Path(args.env)
+    try:
+        backup = env_update(
+            env_path,
+            {
+                "MONARCH_COOKIE_HEADER": header,
+                "MONARCH_CSRF_TOKEN": csrf,
+                "MONARCH_COOKIE_NAME": cookie_name,
+            },
+        )
+    except EnvFileError as exc:
+        print(f"\nCould not update {env_path}: {exc}")
+        return 1
+
+    print(f"\nAccepted - {accounts} accounts visible.")
+    print(f"Wrote {env_path}" + (f" (backup: {backup.name})" if backup else ""))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="monarch-euro",
@@ -597,6 +667,11 @@ def build_parser() -> argparse.ArgumentParser:
                    help="record exported rows so they are not exported twice (default)")
     p.add_argument("--no-mark", dest="mark", action="store_false")
     p.set_defaults(func=cmd_export)
+
+    p = sub.add_parser("monarch-cookie",
+                       help="refresh the Monarch session from a pasted Cookie header")
+    p.add_argument("--cookie", help="the Cookie header; omit to read from stdin")
+    p.set_defaults(func=cmd_monarch_cookie)
 
     p = sub.add_parser("notify-test", help="send a sample failure notification")
     p.set_defaults(func=cmd_notify_test)
