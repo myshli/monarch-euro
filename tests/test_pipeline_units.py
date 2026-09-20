@@ -386,3 +386,27 @@ def test_html_in_bank_errors_is_escaped():
 
     msg = format_failure("vps", ["<script>bad</script>"], 0, 0)
     assert "<script>" not in msg and "&lt;script&gt;" in msg
+
+
+# -- env file integrity ----------------------------------------------------
+
+def test_duplicate_env_keys_are_rejected(tmp_path):
+    """A duplicated key means a damaged file; taking one value silently
+    produces a failure that points somewhere else entirely."""
+    from monarch_euro.config import ConfigError, _load_dotenv
+
+    env = tmp_path / ".env"
+    env.write_text("MONARCH_COOKIE_HEADER=\nMONARCH_COOKIE_HEADER=abc\n")
+    with pytest.raises(ConfigError, match="more than once"):
+        _load_dotenv(env)
+
+
+def test_normal_env_file_loads(tmp_path, monkeypatch):
+    from monarch_euro.config import _load_dotenv
+
+    env = tmp_path / ".env"
+    env.write_text("# comment\nFOO_X=1\nBAR_X=two\n\n")
+    monkeypatch.delenv("FOO_X", raising=False)
+    _load_dotenv(env)
+    import os
+    assert os.environ["FOO_X"] == "1"

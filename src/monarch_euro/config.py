@@ -16,9 +16,33 @@ class ConfigError(RuntimeError):
 
 
 def _load_dotenv(path: Path) -> None:
-    """Minimal .env loader. Real environment variables always win."""
+    """Minimal .env loader. Real environment variables always win.
+
+    Duplicate keys are rejected rather than silently resolved. A file where
+    the same key appears twice is almost always damaged, and quietly taking
+    one of the two values produces a failure that points somewhere else
+    entirely - an empty cookie reads as "no credentials configured".
+    """
     if not path.is_file():
         return
+
+    seen: set[str] = set()
+    duplicates: set[str] = set()
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key = line.partition("=")[0].strip()
+        if key in seen:
+            duplicates.add(key)
+        seen.add(key)
+    if duplicates:
+        raise ConfigError(
+            f"{path} defines {', '.join(sorted(duplicates))} more than once. "
+            f"Remove the duplicate line(s); which value wins is otherwise "
+            f"arbitrary and the failure will surface somewhere unrelated."
+        )
+
     for raw in path.read_text(encoding="utf-8").splitlines():
         line = raw.strip()
         if not line or line.startswith("#") or "=" not in line:
