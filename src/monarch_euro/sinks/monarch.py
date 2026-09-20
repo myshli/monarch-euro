@@ -124,6 +124,15 @@ class MonarchSink:
                 "code in Monarch's security settings), not a one-time code."
             ) from exc
         except Exception as exc:
+            if "429" in str(exc):
+                # Retrying is what caused this; say so rather than inviting more.
+                raise MonarchError(
+                    "Monarch is rate-limiting sign-ins (HTTP 429). Wait before "
+                    "trying again - roughly 15-30 minutes clears it. Repeated "
+                    "attempts extend the limit rather than shortening it. Any "
+                    "saved session has been left in place."
+                ) from exc
+
             # A stale pickle produces confusing downstream errors; clear it so
             # the next run re-authenticates from scratch.
             if self.session_path.exists():
