@@ -50,7 +50,22 @@ def duplicate_keys(path: Path) -> set[str]:
     return duplicates
 
 
-def update(path: Path, values: dict[str, str], backup: bool = True) -> Path | None:
+def _prune_backups(directory: Path, keep: int) -> None:
+    """Old backups hold superseded credentials; keep only a few."""
+    backups = sorted(directory.glob("*.env.*"), reverse=True)
+    for stale in backups[keep:]:
+        try:
+            stale.unlink()
+        except OSError:
+            pass
+
+
+def update(
+    path: Path,
+    values: dict[str, str],
+    backup: bool = True,
+    backup_dir_override: Path | None = None,
+) -> Path | None:
     """Set `values` in `path`, leaving everything else byte-for-byte alone.
 
     A key already present is rewritten where it stands, so ordering and the
@@ -71,10 +86,18 @@ def update(path: Path, values: dict[str, str], backup: bool = True) -> Path | No
 
     backup_path: Path | None = None
     if backup:
+        # Deliberately outside the repository. A backup written beside .env
+        # once reached a public repo because .gitignore covered `.env` but not
+        # `.env.bak-<timestamp>`. Keeping them elsewhere removes the chance
+        # entirely rather than relying on an ignore rule staying correct.
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        backup_path = path.with_suffix(f".bak-{stamp}")
+        backup_dir = Path(backup_dir_override or Path.home() / ".monarch-euro" / "env-backups")
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        os.chmod(backup_dir, 0o700)
+        backup_path = backup_dir / f"{path.name}.{stamp}"
         shutil.copy2(path, backup_path)
         os.chmod(backup_path, 0o600)
+        _prune_backups(backup_dir, keep=5)
 
     lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
     remaining = dict(values)

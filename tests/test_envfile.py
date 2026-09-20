@@ -128,3 +128,35 @@ def test_cookie_values_containing_equals_are_kept_whole():
 
 def test_garbage_yields_nothing_rather_than_raising():
     assert parse_cookie_header("not a cookie header at all") == {}
+
+
+# -- backups must not live in the repo -------------------------------------
+
+def test_backups_are_written_outside_the_repo(tmp_path):
+    """A backup written beside .env once reached a public repo, because
+    .gitignore covered `.env` but not `.env.bak-<timestamp>`."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    env = repo / ".env"
+    env.write_text("A=1\n")
+    backups = tmp_path / "elsewhere"
+
+    backup = update(env, {"A": "2"}, backup_dir_override=backups)
+
+    assert backup is not None
+    assert backups in backup.parents
+    assert repo not in backup.parents
+    assert [p.name for p in repo.iterdir()] == [".env"]
+
+
+def test_only_recent_backups_are_kept(tmp_path):
+    """Old backups hold superseded credentials."""
+    import time
+
+    env = tmp_path / ".env"
+    env.write_text("A=0\n")
+    backups = tmp_path / "b"
+    for i in range(8):
+        update(env, {"A": str(i)}, backup_dir_override=backups)
+        time.sleep(0.01)
+    assert len(list(backups.glob("*.env.*"))) <= 5

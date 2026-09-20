@@ -683,6 +683,58 @@ def cmd_monarch_cookie(config: Config, args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_set_secret(config: Config, args: argparse.Namespace) -> int:
+    """Set one secret in .env here and, optionally, on the sync host too.
+
+    Rotating a credential otherwise means editing the same value in two
+    places by hand, which is both tedious and easy to get half-done.
+    """
+    import subprocess
+    from pathlib import Path
+
+    key = args.key.upper()
+    value = args.value
+    if value is None:
+        if sys.stdin.isatty():
+            print(f"Paste the new value for {key}, then press Enter:\n")
+        value = sys.stdin.readline().strip()
+    if not value:
+        print("Nothing given; aborting.")
+        return 1
+
+    env_path = Path(args.env)
+    try:
+        backup = env_update(env_path, {key: value})
+    except EnvFileError as exc:
+        print(f"Could not update {env_path}: {exc}")
+        return 1
+    print(f"{key} set in {env_path}" + (f"  (backup: {backup})" if backup else ""))
+
+    if not args.host:
+        return 0
+
+    # Update the remote in place rather than copying the whole file, so local
+    # settings (DRY_RUN in particular) never leak onto the sync host.
+    remote_cmd = (
+        f"cd {args.remote_path} && "
+        f"sudo -u {args.remote_user} {args.remote_path}/.venv/bin/monarch-euro "
+        f"set-secret {key}"
+    )
+    try:
+        completed = subprocess.run(
+            ["ssh", args.host, remote_cmd],
+            input=value + "\n", text=True, capture_output=True, timeout=60,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        print(f"Could not reach {args.host}: {exc}")
+        return 1
+
+    output = (completed.stdout + completed.stderr).strip().splitlines()
+    for line in output[-3:]:
+        print(f"  {args.host}: {line}")
+    return completed.returncode
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="monarch-euro",
@@ -729,6 +781,15 @@ def build_parser() -> argparse.ArgumentParser:
                        help="refresh the Monarch session from a pasted Cookie header")
     p.add_argument("--cookie", help="the Cookie header; omit to read from stdin")
     p.set_defaults(func=cmd_monarch_cookie)
+
+    p = sub.add_parser("set-secret",
+                       help="set one secret in .env, here and optionally on the sync host")
+    p.add_argument("key", help="e.g. TELEGRAM_BOT_TOKEN, WISE_TOKEN")
+    p.add_argument("--value", help="the value; omit to read from stdin")
+    p.add_argument("--host", help="also update this ssh host, e.g. root@167.99.150.73")
+    p.add_argument("--remote-path", default="/opt/monarch-euro")
+    p.add_argument("--remote-user", default="monarch")
+    p.set_defaults(func=cmd_set_secret)
 
     p = sub.add_parser("notify-test", help="send a sample failure notification")
     p.set_defaults(func=cmd_notify_test)

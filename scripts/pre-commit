@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# Block commits that would publish a credential.
+#
+# .gitignore is necessary but not sufficient: it covered `.env` and still let
+# `.env.corrupt.bak` through to a public repository. This checks what is
+# actually staged, by filename and by content, so a new backup or export
+# naming scheme cannot slip past a rule nobody remembered to update.
+
+set -uo pipefail
+staged=$(git diff --cached --name-only --diff-filter=ACM)
+[ -z "$staged" ] && exit 0
+
+fail=0
+
+# 1. Filenames that should never be committed, whatever .gitignore says.
+while IFS= read -r f; do
+  case "$(basename "$f")" in
+    .env|.env.*|*.bak|*.bak-*|*.pem|*.key|*_rsa|id_*)
+      [ "$(basename "$f")" = ".env.example" ] && continue
+      echo "BLOCKED  $f  — credential-bearing filename"
+      fail=1 ;;
+  esac
+done <<< "$staged"
+
+# 2. Content that looks like a live secret, wherever it appears.
+patterns='[0-9]{8,10}:AA[A-Za-z0-9_-]{30,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|session_id=[a-f0-9]{16,}|csrftoken=[A-Za-z0-9]{16,}'
+while IFS= read -r f; do
+  [ -f "$f" ] || continue
+  case "$(basename "$f")" in
+    pre-commit|*.md) continue ;;
+  esac
+  if git show ":$f" 2>/dev/null | grep -qE "$patterns"; then
+    echo "BLOCKED  $f  — contains something shaped like a live secret"
+    fail=1
+  fi
+done <<< "$staged"
+
+if [ "$fail" -ne 0 ]; then
+  cat <<'MSG'
+
+Commit refused. If this is a false positive:
+  git commit --no-verify
+MSG
+  exit 1
+fi
+exit 0

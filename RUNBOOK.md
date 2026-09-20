@@ -336,6 +336,23 @@ Worth doing before anything that touches `/var/lib/monarch-euro`.
 
 ---
 
+## Rotating a secret
+
+One command updates this machine and the sync host together, so a rotation
+cannot end up half-applied:
+
+```bash
+monarch-euro set-secret TELEGRAM_BOT_TOKEN --host root@167.99.150.73
+# paste the new value at the prompt
+```
+
+Works for any key: `WISE_TOKEN`, `TELEGRAM_CHAT_ID`, and so on. The Monarch
+session has its own command, `monarch-cookie`, which also validates before
+writing. Omit `--host` to change only the local file.
+
+Backups of `.env` are written to `~/.monarch-euro/env-backups/`, outside the
+repository, and only the five most recent are kept.
+
 ## Credentials, and where they live
 
 | Secret | Location | Expires |
