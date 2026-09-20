@@ -104,9 +104,7 @@ class MonarchSink:
         ]
         if missing:
             raise MonarchError(
-                f"Cannot log in to Monarch: {', '.join(missing)} not set. "
-                f"MONARCH_MFA_SECRET is the TOTP seed from Settings -> Security, "
-                f"not a six-digit code."
+                f"Cannot log in to Monarch: {', '.join(missing)} not set."
             )
 
         try:
