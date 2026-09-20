@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import types
 from datetime import date
 from decimal import Decimal
 
@@ -410,3 +411,26 @@ def test_normal_env_file_loads(tmp_path, monkeypatch):
     _load_dotenv(env)
     import os
     assert os.environ["FOO_X"] == "1"
+
+
+def test_configured_bank_without_a_session_is_reported(tmp_path, monkeypatch):
+    """The sync loop iterates sessions, so an unlinked bank would otherwise
+    never appear and the run would report success having fetched nothing."""
+    from monarch_euro import pipeline
+
+    cfg = types.SimpleNamespace(
+        state_dir=tmp_path, db_path=tmp_path / "s.sqlite3",
+        links=[types.SimpleNamespace(key="n26", aspsp_name="N26", aspsp_country="DE",
+                                     monarch_account_name="N26 Checking")],
+        wise_accounts=[], wise_token="", lookback_days=30, target_currency="USD",
+        fx_base_url="", monarch_email="", monarch_password="", monarch_mfa_secret="",
+        monarch_token="", monarch_session_cookie="", monarch_csrf_token="",
+        monarch_cookie_name="session_id", monarch_cookie_header="",
+        monarch_session_path=tmp_path / "s.pickle", dry_run=True,
+        eb_application_id="x", eb_private_key_path=tmp_path / "k",
+        eb_redirect_url="", eb_base_url="", note_original_amount=True,
+        include_pending=False, telegram_bot_token="", telegram_chat_id="",
+        notify_on_success=False,
+    )
+    result = pipeline.sync(cfg)
+    assert any("not linked on this machine" in e for e in result.errors)

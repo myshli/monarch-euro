@@ -79,9 +79,12 @@ def sync(config: Config) -> SyncResult:
         run_id = store.start_run()
         sessions = store.all_sessions()
         if not sessions and not config.wise_accounts:
+            missing = ", ".join(link.key for link in config.links) or "<key>"
             message = (
-                "No bank sessions found. Run `monarch-euro link <key>` for each "
-                "entry in ACCOUNT_LINKS before syncing."
+                f"No bank sessions on this machine. Run `monarch-euro link "
+                f"{missing.split(', ')[0]}` (configured but not linked on this "
+                f"machine: {missing}). Sessions are per-host; linking elsewhere "
+                f"does not carry over."
             )
             log.error(message)
             result.errors.append(message)
@@ -89,6 +92,20 @@ def sync(config: Config) -> SyncResult:
             return result
 
         links = {link.key: link for link in config.links}
+
+        # A configured bank with no session is silent otherwise: the loop
+        # below iterates sessions, so an unlinked bank simply never appears
+        # and the run reports success having fetched nothing from it.
+        linked = {row["link_key"] for row in sessions}
+        for key in links:
+            if key not in linked:
+                message = (
+                    f"[{key}] configured in ACCOUNT_LINKS but not linked on this "
+                    f"machine - run `monarch-euro link {key}`. Sessions are per-host; "
+                    f"linking on another machine does not carry over."
+                )
+                log.error(message)
+                result.errors.append(message)
 
         with EnableBankingClient(
             application_id=config.eb_application_id,
