@@ -11,6 +11,7 @@ from urllib.parse import parse_qs, urlparse
 from .categorize import write_default_rules
 from .config import Config, ConfigError, load_config
 from .pipeline import _rules_path, refresh_accounts, sync
+from .sinks.csvfile import CsvSink
 from .sinks.monarch import MonarchSink
 from .sources.enablebanking import EnableBankingClient, extract_accounts
 from .sources.wise import WiseClient, WiseError, WiseSCARequired
@@ -424,6 +425,97 @@ def cmd_monarch_login(config: Config, args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_export(config: Config, args: argparse.Namespace) -> int:
+    """Fetch, convert and categorize, then write a Monarch-importable CSV.
+
+    Everything except the final upload runs unattended; Monarch's CAPTCHA
+    only blocks the write, not the work.
+    """
+    from .categorize import Categorizer, load_rules, transaction_code
+    from .fx import FxConverter
+    from .pipeline import _rules_path
+    from .sources.wise import WiseClient
+    from datetime import timedelta
+
+    date_from = date.today() - timedelta(days=args.days)
+    categorizer = Categorizer(load_rules(_rules_path(config)))
+    sink = CsvSink(config.state_dir / "exports")
+    fetched = skipped = 0
+
+    with Store(config.db_path) as store, FxConverter(
+        store, config.target_currency, base_url=config.fx_base_url
+    ) as fx:
+        batches: list[tuple[str, str, list]] = []
+
+        for session_row in store.all_sessions():
+            link = next((l for l in config.links if l.key == session_row["link_key"]), None)
+            if link is None:
+                continue
+            with _client(config) as eb:
+                for account in store.accounts_for(link.key):
+                    txns = eb.transactions(
+                        link.key, account["account_uid"], date_from,
+                        include_pending=config.include_pending,
+                    )
+                    batches.append((link.key, link.monarch_account_name, txns))
+
+        if config.wise_accounts and config.wise_token:
+            with WiseClient(
+                token=config.wise_token, private_key_path=config.wise_private_key_path
+            ) as wise:
+                profiles = wise.profiles()
+                pid = config.wise_profile_id or str(profiles[0].get("id"))
+                balances = {str(b.get("currency","")).upper(): b for b in wise.balances(pid)}
+                for wa in config.wise_accounts:
+                    b = balances.get(wa.currency)
+                    if b is None:
+                        print(f"  warn: no {wa.currency} balance on Wise profile {pid}")
+                        continue
+                    txns = wise.transactions(
+                        f"wise-{wa.currency.lower()}", pid, b.get("id"), wa.currency, date_from
+                    )
+                    batches.append((f"wise-{wa.currency.lower()}", wa.monarch_account_name, txns))
+
+        for _key, account_name, txns in batches:
+            fetched += len(txns)
+            if not txns:
+                continue
+            if args.new_only:
+                keys = [t.dedupe_key() for t in txns]
+                new_keys = store.filter_new(keys)
+                fresh = [t for t, k in zip(txns, keys) if k in new_keys]
+                skipped += len(txns) - len(fresh)
+            else:
+                fresh = txns
+            if not fresh:
+                continue
+            fx.prefetch(fresh)
+            for txn in fresh:
+                converted = fx.convert(txn)
+                merchant, category = categorizer.apply(
+                    txn.description, txn.counterparty, transaction_code(txn.raw)
+                )
+                sink.add(converted, account_name, merchant, category,
+                         converted.note(config.note_original_amount))
+                if args.mark:
+                    store.mark_posted(
+                        dedupe_key=txn.dedupe_key(), account_uid=txn.account_uid,
+                        monarch_txn_id=None, booked_on=txn.booked_on,
+                        amount=converted.amount, currency=converted.currency,
+                    )
+
+    path = sink.write()
+    print(f"fetched={fetched} written={len(sink)} skipped(already exported)={skipped}")
+    if path:
+        print(f"\n{path}")
+        print("\nUpload at app.monarch.com -> Settings -> Data -> Import transactions")
+        if not args.mark:
+            print("NOT marked as exported (--mark to record them and avoid duplicates next time)")
+    else:
+        print("Nothing new to export.")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="monarch-euro",
@@ -454,6 +546,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("sync", help="fetch, convert and push transactions")
     p.set_defaults(func=cmd_sync)
+
+    p = sub.add_parser("export", help="write a Monarch-importable CSV")
+    p.add_argument("--days", type=int, default=90)
+    p.add_argument("--new-only", action="store_true", default=True,
+                   help="skip transactions already exported (default)")
+    p.add_argument("--all", dest="new_only", action="store_false",
+                   help="export the whole window regardless of the ledger")
+    p.add_argument("--mark", action="store_true", default=True,
+                   help="record exported rows so they are not exported twice (default)")
+    p.add_argument("--no-mark", dest="mark", action="store_false")
+    p.set_defaults(func=cmd_export)
 
     p = sub.add_parser("status", help="show sessions, accounts and recent runs")
     p.add_argument("--runs", type=int, default=10)
