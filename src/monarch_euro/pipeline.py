@@ -18,6 +18,7 @@ from .sources.enablebanking import (
     EnableBankingClient,
     extract_accounts,
 )
+from .sources.wise import WiseClient, WiseError
 from .store import Store
 
 log = logging.getLogger(__name__)
@@ -76,7 +77,7 @@ def sync(config: Config) -> SyncResult:
     with Store(config.db_path) as store:
         run_id = store.start_run()
         sessions = store.all_sessions()
-        if not sessions:
+        if not sessions and not config.wise_accounts:
             message = (
                 "No bank sessions found. Run `monarch-euro link <key>` for each "
                 "entry in ACCOUNT_LINKS before syncing."
@@ -140,6 +141,22 @@ def sync(config: Config) -> SyncResult:
                     result.errors.append(message)
                 except Exception as exc:  # keep other banks syncing
                     message = f"[{link_key}] sync failed: {exc}"
+                    log.exception(message)
+                    result.errors.append(message)
+
+            if config.wise_accounts:
+                try:
+                    _sync_wise(
+                        config=config,
+                        store=store,
+                        fx=fx,
+                        monarch=monarch,
+                        categorizer=categorizer,
+                        date_from=date_from,
+                        result=result,
+                    )
+                except Exception as exc:
+                    message = f"[wise] sync failed: {exc}"
                     log.exception(message)
                     result.errors.append(message)
 
@@ -227,3 +244,108 @@ def _sync_one_link(
                     currency=converted.currency,
                 )
             result.posted += 1
+
+
+def _sync_wise(
+    *,
+    config: Config,
+    store: Store,
+    fx: FxConverter,
+    monarch: MonarchSink,
+    categorizer: Categorizer,
+    date_from: date,
+    result: SyncResult,
+) -> None:
+    """Sync Wise balances through Wise's own API.
+
+    Wise does not go through Enable Banking: PSD2 access is scoped to
+    EEA-registered institutions, so a US-registered profile is invisible to an
+    AISP even when its EUR balance carries a Belgian IBAN.
+    """
+    with WiseClient(
+        token=config.wise_token,
+        private_key_path=config.wise_private_key_path,
+    ) as wise:
+        profiles = wise.profiles()
+        if not profiles:
+            raise WiseError("Wise returned no profiles for this token.")
+
+        personal = next(
+            (p for p in profiles if str(p.get("type", "")).lower() == "personal"),
+            profiles[0],
+        )
+        profile_id = personal.get("id")
+        log.info("Wise profile %s (%s)", profile_id, personal.get("type", "?"))
+
+        balances = wise.balances(profile_id)
+        by_currency = {
+            str(b.get("currency", "")).upper(): b for b in balances if b.get("currency")
+        }
+        log.info("Wise balances available: %s", ", ".join(sorted(by_currency)) or "none")
+
+        for account in config.wise_accounts:
+            balance = by_currency.get(account.currency)
+            if balance is None:
+                message = (
+                    f"[wise] no {account.currency} balance on this profile "
+                    f"(have: {', '.join(sorted(by_currency)) or 'none'})"
+                )
+                log.error(message)
+                result.errors.append(message)
+                continue
+
+            monarch_account_id = monarch.ensure_account(account.monarch_account_name)
+            transactions = wise.transactions(
+                account_key=f"wise-{account.currency.lower()}",
+                profile_id=profile_id,
+                balance_id=balance.get("id"),
+                currency=account.currency,
+                date_from=date_from,
+            )
+            result.fetched += len(transactions)
+            if not transactions:
+                continue
+
+            account_uid = transactions[0].account_uid
+            store.put_account(
+                account_uid=account_uid,
+                link_key=f"wise-{account.currency.lower()}",
+                identifier=str(balance.get("id")),
+                name=f"Wise {account.currency}",
+                currency=account.currency,
+                monarch_account_id=monarch_account_id,
+                monarch_account_name=account.monarch_account_name,
+            )
+
+            keys = [t.dedupe_key() for t in transactions]
+            new_keys = store.filter_new(keys)
+            fresh = [t for t, k in zip(transactions, keys) if k in new_keys]
+            result.skipped += len(transactions) - len(fresh)
+            if not fresh:
+                log.info("[wise/%s] nothing new", account.currency)
+                continue
+
+            fx.prefetch(fresh)
+            log.info("[wise/%s] posting %d new transactions", account.currency, len(fresh))
+
+            for txn in fresh:
+                converted = fx.convert(txn)
+                merchant, category = categorizer.apply(txn.description, txn.counterparty)
+                note = converted.note(config.note_original_amount)
+                monarch_txn_id = monarch.post(
+                    txn=converted,
+                    account_id=monarch_account_id,
+                    merchant=merchant,
+                    category=category,
+                    note=note,
+                )
+                if not config.dry_run:
+                    store.mark_posted(
+                        dedupe_key=txn.dedupe_key(),
+                        account_uid=txn.account_uid,
+                        monarch_txn_id=monarch_txn_id,
+                        booked_on=txn.booked_on,
+                        amount=converted.amount,
+                        currency=converted.currency,
+                    )
+                result.posted += 1

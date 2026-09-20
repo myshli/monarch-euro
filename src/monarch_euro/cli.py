@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from urllib.parse import parse_qs, urlparse
 
 from .categorize import write_default_rules
@@ -13,6 +13,7 @@ from .config import Config, ConfigError, load_config
 from .pipeline import _rules_path, refresh_accounts, sync
 from .sinks.monarch import MonarchSink
 from .sources.enablebanking import EnableBankingClient, extract_accounts
+from .sources.wise import WiseClient, WiseError, WiseSCARequired
 from .store import Store
 
 
@@ -247,6 +248,76 @@ def cmd_unlink(config: Config, args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_wise_probe(config: Config, args: argparse.Namespace) -> int:
+    """Enumerate the Wise profile and its balances, and report whether SCA applies.
+
+    Whether a profile needs SCA-signed requests depends on where it is
+    registered, not on anything we can configure, so the only reliable answer
+    comes from asking Wise.
+    """
+    if not config.wise_token:
+        print("WISE_TOKEN is not set. Generate a personal token in Wise under "
+              "Settings -> API tokens (needs 2-step login enabled).")
+        return 2
+
+    with WiseClient(
+        token=config.wise_token, private_key_path=config.wise_private_key_path
+    ) as wise:
+        try:
+            profiles = wise.profiles()
+        except WiseError as exc:
+            print(f"Could not list profiles: {exc}")
+            return 1
+
+        print(f"Profiles ({len(profiles)})")
+        for profile in profiles:
+            print(f"  id={profile.get('id')}  type={profile.get('type')}")
+
+        personal = next(
+            (p for p in profiles if str(p.get("type", "")).lower() == "personal"),
+            profiles[0],
+        )
+        profile_id = personal.get("id")
+
+        try:
+            balances = wise.balances(profile_id)
+        except WiseError as exc:
+            print(f"Could not list balances: {exc}")
+            return 1
+
+        print(f"\nBalances on profile {profile_id} ({len(balances)})")
+        for balance in balances:
+            amount = (balance.get("amount") or {}).get("value")
+            print(f"  {str(balance.get('currency','?')):<5} id={balance.get('id')}  "
+                  f"balance={amount}")
+
+        # The real question: can we read a statement, and did SCA get involved?
+        print("\nStatement access")
+        end = date.today()
+        start = end - timedelta(days=args.days)
+        for balance in balances:
+            currency = str(balance.get("currency", "")).upper()
+            if args.currency and currency != args.currency.upper():
+                continue
+            try:
+                payload = wise.statement(profile_id, balance.get("id"), currency, start, end)
+            except WiseSCARequired as exc:
+                print(f"  {currency:<5} SCA REQUIRED - {exc}")
+                continue
+            except WiseError as exc:
+                print(f"  {currency:<5} FAILED - {exc}")
+                continue
+            count = len(payload.get("transactions") or [])
+            print(f"  {currency:<5} OK - {count} transactions in the last {args.days} days")
+
+            for raw in (payload.get("transactions") or [])[: args.sample]:
+                txn = WiseClient._normalize("wise", "probe", raw, currency)
+                if txn:
+                    print(f"          {txn.booked_on}  {txn.amount:>10.2f} {txn.currency}  "
+                          f"{(txn.counterparty or txn.description)[:40]}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="monarch-euro",
@@ -280,6 +351,12 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("status", help="show sessions, accounts and recent runs")
     p.add_argument("--runs", type=int, default=10)
     p.set_defaults(func=cmd_status)
+
+    p = sub.add_parser("wise-probe", help="list Wise profiles/balances and test statement access")
+    p.add_argument("--days", type=int, default=30)
+    p.add_argument("--currency", help="only probe this currency")
+    p.add_argument("--sample", type=int, default=3, help="sample transactions to print")
+    p.set_defaults(func=cmd_wise_probe)
 
     p = sub.add_parser("rules-init", help="write a starter rules.json")
     p.add_argument("--force", action="store_true")

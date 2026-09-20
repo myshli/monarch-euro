@@ -57,12 +57,25 @@ class AccountLink:
 
 
 @dataclass(frozen=True)
+class WiseAccount:
+    """Maps one Wise balance (a currency) to one manual account in Monarch."""
+
+    currency: str
+    monarch_account_name: str
+
+
+@dataclass(frozen=True)
 class Config:
     # --- Enable Banking (source) ---
     eb_application_id: str
     eb_private_key_path: Path
     eb_base_url: str
     eb_redirect_url: str
+
+    # --- Wise (source, via Wise's own API) ---
+    wise_token: str
+    wise_private_key_path: Path | None
+    wise_accounts: list["WiseAccount"]
 
     # --- Monarch (sink) ---
     monarch_email: str
@@ -127,21 +140,73 @@ def _parse_links() -> list[AccountLink]:
     return links
 
 
+def _parse_wise_accounts() -> list[WiseAccount]:
+    """Parse WISE_ACCOUNTS: ``CUR|Monarch account name``, semicolon separated.
+
+    Each Wise balance is a separate currency and belongs in its own Monarch
+    account, so that a USD balance is not silently converted and a EUR one is.
+    """
+    raw = os.environ.get("WISE_ACCOUNTS", "").strip()
+    if not raw:
+        return []
+    accounts: list[WiseAccount] = []
+    for chunk in raw.split(";"):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        parts = [p.strip() for p in chunk.split("|")]
+        if len(parts) != 2:
+            raise ConfigError(
+                f"Malformed WISE_ACCOUNTS entry {chunk!r}. Expected "
+                "'CURRENCY|Monarch account name'."
+            )
+        accounts.append(WiseAccount(currency=parts[0].upper(), monarch_account_name=parts[1]))
+    currencies = [a.currency for a in accounts]
+    duplicates = {c for c in currencies if currencies.count(c) > 1}
+    if duplicates:
+        raise ConfigError(f"Duplicate WISE_ACCOUNTS currencies: {sorted(duplicates)}")
+    return accounts
+
+
 def load_config(dotenv: Path | None = None) -> Config:
     _load_dotenv(dotenv or Path(".env"))
 
     state_dir = Path(os.environ.get("STATE_DIR", "./state")).expanduser()
     state_dir.mkdir(parents=True, exist_ok=True)
 
-    key_path = Path(_require("EB_PRIVATE_KEY_PATH")).expanduser()
-    if not key_path.is_file():
-        raise ConfigError(f"EB_PRIVATE_KEY_PATH points at a missing file: {key_path}")
+    links = _parse_links()
+    wise_accounts = _parse_wise_accounts()
+    if not links and not wise_accounts:
+        raise ConfigError(
+            "Nothing to sync. Set ACCOUNT_LINKS (Enable Banking) and/or "
+            "WISE_ACCOUNTS (Wise's own API)."
+        )
+
+    # Enable Banking config is only needed when some bank actually uses it.
+    if links:
+        key_path = Path(_require("EB_PRIVATE_KEY_PATH")).expanduser()
+        if not key_path.is_file():
+            raise ConfigError(f"EB_PRIVATE_KEY_PATH points at a missing file: {key_path}")
+        eb_application_id = _require("EB_APPLICATION_ID")
+        eb_redirect_url = _require("EB_REDIRECT_URL")
+    else:
+        key_path = Path(os.environ.get("EB_PRIVATE_KEY_PATH", "/nonexistent")).expanduser()
+        eb_application_id = os.environ.get("EB_APPLICATION_ID", "")
+        eb_redirect_url = os.environ.get("EB_REDIRECT_URL", "")
+
+    wise_key_raw = os.environ.get("WISE_PRIVATE_KEY_PATH", "").strip()
+    wise_key_path = Path(wise_key_raw).expanduser() if wise_key_raw else None
+    if wise_accounts and not os.environ.get("WISE_TOKEN", "").strip():
+        raise ConfigError("WISE_ACCOUNTS is set but WISE_TOKEN is empty.")
 
     return Config(
-        eb_application_id=_require("EB_APPLICATION_ID"),
+        eb_application_id=eb_application_id,
         eb_private_key_path=key_path,
+        wise_token=os.environ.get("WISE_TOKEN", "").strip(),
+        wise_private_key_path=wise_key_path,
+        wise_accounts=wise_accounts,
         eb_base_url=os.environ.get("EB_BASE_URL", "https://api.enablebanking.com").rstrip("/"),
-        eb_redirect_url=_require("EB_REDIRECT_URL"),
+        eb_redirect_url=eb_redirect_url,
         monarch_email=_require("MONARCH_EMAIL"),
         monarch_password=_require("MONARCH_PASSWORD"),
         monarch_mfa_secret=_require("MONARCH_MFA_SECRET"),
@@ -152,5 +217,5 @@ def load_config(dotenv: Path | None = None) -> Config:
         include_pending=_flag("INCLUDE_PENDING", False),
         dry_run=_flag("DRY_RUN", False),
         state_dir=state_dir,
-        links=_parse_links(),
+        links=links,
     )
