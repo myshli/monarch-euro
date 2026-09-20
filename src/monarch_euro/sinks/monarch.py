@@ -91,12 +91,14 @@ class MonarchSink:
         if self._logged_in:
             return
 
+        # MONARCH_MFA_SECRET is deliberately not required: an account without
+        # two-factor enabled logs in on email and password alone, and demanding
+        # a seed that does not exist would block it for no reason.
         missing = [
             name
             for name, value in (
                 ("MONARCH_EMAIL", self.email),
                 ("MONARCH_PASSWORD", self.password),
-                ("MONARCH_MFA_SECRET", self.mfa_secret),
             )
             if not value
         ]
@@ -114,7 +116,7 @@ class MonarchSink:
                     password=self.password,
                     use_saved_session=True,
                     save_session=True,
-                    mfa_secret_key=self.mfa_secret,
+                    mfa_secret_key=self.mfa_secret or None,
                 )
             )
         except RequireMFAException as exc:
@@ -131,6 +133,47 @@ class MonarchSink:
                 self.session_path.unlink(missing_ok=True)
             raise MonarchError(f"Monarch login failed: {exc}") from exc
         self._logged_in = True
+
+    def interactive_login(self, mfa_code: str | None = None) -> None:
+        """Log in once, typing the MFA code by hand, and persist the session.
+
+        This is the alternative to storing the TOTP seed. The saved session
+        outlives the code by months, so unattended runs need no second factor
+        on disk - at the cost of redoing this when the session eventually
+        lapses.
+        """
+        if not self.email or not self.password:
+            raise MonarchError("MONARCH_EMAIL and MONARCH_PASSWORD must be set.")
+
+        self.session_path.unlink(missing_ok=True)
+        try:
+            if mfa_code:
+                self._run(
+                    self._mm.multi_factor_authenticate(self.email, self.password, mfa_code)
+                )
+                self._mm.save_session(str(self.session_path))
+            else:
+                self._run(
+                    self._mm.login(
+                        email=self.email,
+                        password=self.password,
+                        use_saved_session=False,
+                        save_session=True,
+                    )
+                )
+        except RequireMFAException:
+            raise MonarchError(
+                "Monarch asked for a two-factor code. Re-run with --code <123456> "
+                "using the current code from your authenticator app."
+            )
+        except Exception as exc:
+            raise MonarchError(f"Monarch login failed: {exc}") from exc
+
+        self._logged_in = True
+        try:
+            self.session_path.chmod(0o600)
+        except OSError:
+            pass
 
     # -- lookups -----------------------------------------------------------
 

@@ -335,6 +335,30 @@ def cmd_wise_probe(config: Config, args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_monarch_login(config: Config, args: argparse.Namespace) -> int:
+    """Establish a Monarch session without storing a TOTP seed."""
+    from .sinks.monarch import MonarchError
+
+    with MonarchSink(
+        email=config.monarch_email,
+        password=config.monarch_password,
+        mfa_secret=config.monarch_mfa_secret,
+        session_path=config.monarch_session_path,
+        dry_run=True,
+    ) as monarch:
+        try:
+            monarch.interactive_login(mfa_code=args.code)
+        except MonarchError as exc:
+            print(str(exc))
+            return 1
+        monarch.refresh_metadata()
+        print(f"Signed in. Session saved to {config.monarch_session_path}")
+        print(f"  {len(monarch.account_names())} accounts, "
+              f"{len(monarch.category_names())} categories visible")
+        print("\nThe session persists across runs, so MONARCH_MFA_SECRET can stay empty.")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="monarch-euro",
@@ -369,6 +393,11 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("status", help="show sessions, accounts and recent runs")
     p.add_argument("--runs", type=int, default=10)
     p.set_defaults(func=cmd_status)
+
+    p = sub.add_parser("monarch-login",
+                       help="sign in to Monarch once and save the session (no TOTP seed needed)")
+    p.add_argument("--code", help="current 6-digit code from your authenticator app")
+    p.set_defaults(func=cmd_monarch_login)
 
     p = sub.add_parser("wise-probe", help="list Wise profiles/balances and test statement access")
     p.add_argument("--days", type=int, default=30)
