@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from pathlib import Path
 
-from .categorize import Categorizer, load_rules
+from .categorize import Categorizer, load_rules, transaction_code
 from .config import Config
 from .fx import FxConverter
 from .models import SourceTransaction
@@ -228,7 +228,9 @@ def _sync_one_link(
 
         for txn in fresh:
             converted = fx.convert(txn)
-            merchant, category = categorizer.apply(txn.description, txn.counterparty)
+            merchant, category = categorizer.apply(
+                txn.description, txn.counterparty, transaction_code(txn.raw)
+            )
             note = converted.note(config.note_original_amount)
 
             monarch_txn_id = monarch.post(
@@ -335,7 +337,9 @@ def _sync_wise(
 
             for txn in fresh:
                 converted = fx.convert(txn)
-                merchant, category = categorizer.apply(txn.description, txn.counterparty)
+                merchant, category = categorizer.apply(
+                    txn.description, txn.counterparty, transaction_code(txn.raw)
+                )
                 note = converted.note(config.note_original_amount)
                 monarch_txn_id = monarch.post(
                     txn=converted,

@@ -176,6 +176,19 @@ categories:
 ]
 ```
 
+Rules can also match on the bank's ISO 20022 transaction code, which is
+structured and more reliable than text when the bank supplies it:
+
+```json
+{"code": "FEES", "category": "Financial & Legal Services"}
+```
+
+**Transfers are handled first, and deliberately.** Money you move in from
+another account you also track is not income. Left uncategorized it would be
+counted twice — as income here and as spending there — inflating both sides of
+every cash-flow report. The default rules catch top-ups and inter-account
+moves and file them as `Transfer`.
+
 `monarch-euro rules-init` writes a starter set aimed at German/EU merchants.
 Omit `merchant` to keep the cleaned-up name from the statement. Edits take
 effect on the next run; no restart needed.

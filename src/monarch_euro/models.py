@@ -27,14 +27,24 @@ class SourceTransaction:
     reference: str | None
     pending: bool
     raw: dict
+    occurrence: int = 0
+    """Ordinal among otherwise-identical transactions on the same day.
+
+    N26 leaves `entry_reference` null on most rows, so the content hash does
+    the real work — and a plain content hash cannot tell two identical
+    same-day transactions apart. Two €2.50 coffees at the same café would
+    collapse into one and the second would never be imported. Sources assign
+    this ordinal by the bank's own ordering, which is stable for booked
+    transactions, so each gets a distinct identity that survives re-fetching.
+    """
 
     def dedupe_key(self) -> str:
         """Stable identity for this transaction.
 
-        Prefers the bank's own `entry_reference`, which is guaranteed unique
-        per account under the Berlin Group spec. Not every ASPSP populates it,
-        so we fall back to a content hash. The hash deliberately excludes
-        `pending`, so a transaction keeps its identity when it settles.
+        Prefers the bank's own `entry_reference`, which is unique per account
+        under the Berlin Group spec. Not every ASPSP populates it, so we fall
+        back to a content hash plus an occurrence ordinal. The key deliberately
+        excludes `pending`, so a transaction keeps its identity when it settles.
         """
         if self.reference:
             return f"{self.account_uid}:ref:{self.reference}"
@@ -49,7 +59,7 @@ class SourceTransaction:
             ]
         )
         digest = hashlib.sha256(material.encode("utf-8")).hexdigest()[:32]
-        return f"{self.account_uid}:hash:{digest}"
+        return f"{self.account_uid}:hash:{digest}:{self.occurrence}"
 
 
 @dataclass(frozen=True)

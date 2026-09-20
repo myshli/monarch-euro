@@ -41,31 +41,60 @@ NOISE_PATTERNS = [
 WHITESPACE = re.compile(r"\s+")
 
 DEFAULT_RULES: list[dict[str, str]] = [
-    {"match": r"rewe|edeka|lidl|aldi|kaufland|penny|netto|albert heijn|carrefour|mercadona",
-     "merchant": "", "category": "Groceries"},
-    {"match": r"\bdm\b|rossmann|müller|muller drogerie", "merchant": "", "category": "Shopping"},
-    {"match": r"db vertrieb|deutsche bahn|\bbvg\b|\bhvv\b|\bmvg\b|trainline|flixbus|\bsncf\b",
-     "merchant": "", "category": "Travel"},
-    {"match": r"uber|bolt\.eu|free now|lyft|taxi", "merchant": "", "category": "Taxi & Ride Shares"},
-    {"match": r"netflix|spotify|disney|youtube premium|apple\.com/bill|patreon",
-     "merchant": "", "category": "Entertainment & Recreation"},
-    {"match": r"amazon|amzn|zalando|ikea|mediamarkt|saturn", "merchant": "", "category": "Shopping"},
-    {"match": r"vodafone|telekom|o2|congstar|1und1|1&1", "merchant": "", "category": "Phone"},
-    {"match": r"github|openai|anthropic|adobe|figma|notion|linear\.app|vercel|hetzner|digitalocean",
-     "merchant": "", "category": "Software & Tech"},
+    # -- Transfers first: these must never be mistaken for income or spending.
+    # Money moved in from another account you also track would otherwise be
+    # counted twice - once as income here, once as spending there - and inflate
+    # both sides of every cash-flow report.
+    {"match": r"thank you for adding funds|adding funds|top[- ]?up(?! fee)|"
+              r"from your .*account|einzahlung|\bumbuchung\b",
+     "merchant": "Account Top-up", "category": "Transfer"},
+    {"match": r"\bwise\b|transferwise|revolut|\bn26\b.*transfer",
+     "category": "Transfer"},
+
+    # -- Fees: the bank's own ISO 20022 code is authoritative where present.
+    {"code": r"FEES", "category": "Financial & Legal Services"},
+    {"match": r"membership|kontof(ü|ue)hrung|account fee|\bfee\b|geb(ü|ue)hr",
+     "category": "Financial & Legal Services"},
+
+    # -- Cash
     {"match": r"\batm\b|geldautomat|cash withdrawal|bargeldauszahlung",
      "merchant": "ATM Withdrawal", "category": "Cash & ATM"},
-    {"match": r"\bmiete\b|\brent\b|hausverwaltung", "merchant": "", "category": "Rent"},
-    {"match": r"stadtwerke|vattenfall|eon|e\.on|strom|gasag", "merchant": "", "category": "Utilities"},
-    {"match": r"krankenversicherung|tk\b|aok|barmer|health insurance",
-     "merchant": "", "category": "Medical"},
-    {"match": r"finanzamt|steuer|tax office", "merchant": "", "category": "Taxes"},
+
+    # -- Everyday German/EU retail
+    {"match": r"rewe|edeka|lidl|aldi|kaufland|penny|netto|albert heijn|carrefour|mercadona",
+     "category": "Groceries"},
+    {"match": r"\bdm\b|rossmann|m(ü|ue)ller drogerie", "category": "Shopping"},
+    {"match": r"db vertrieb|deutsche bahn|\bbvg\b|\bhvv\b|\bmvg\b|trainline|flixbus|\bsncf\b",
+     "category": "Travel"},
+    {"match": r"uber|bolt\.eu|free now|taxi", "category": "Taxi & Ride Shares"},
+    {"match": r"netflix|spotify|disney|youtube premium|apple\.com/bill|patreon",
+     "category": "Entertainment & Recreation"},
+    {"match": r"amazon|amzn|zalando|ikea|mediamarkt|saturn", "category": "Shopping"},
+    {"match": r"vodafone|telekom|\bo2\b|congstar|1und1|1&1", "category": "Phone"},
+    {"match": r"github|openai|anthropic|adobe|figma|notion|linear\.app|vercel|"
+              r"hetzner|digitalocean", "category": "Software & Tech"},
+
+    # -- Housing and bills
+    {"match": r"\bmiete\b|\brent\b|hausverwaltung", "category": "Rent"},
+    {"match": r"schliessf(ä|ae)ch|schlie(ß|ss)fach|storage|lagerung|self.?storage",
+     "category": "Home Improvement"},
+    {"match": r"stadtwerke|vattenfall|\be\.?on\b|strom|gasag", "category": "Utilities"},
+    {"match": r"krankenversicherung|\btk\b|\baok\b|barmer|health insurance",
+     "category": "Medical"},
+    {"match": r"versicherung|insurance", "category": "Insurance"},
+
+    # -- Immigration / relocation paperwork, which is a real line item right now
+    {"match": r"(ü|ue)bersetzung|translation|beglaubig|certified translation|"
+              r"notar|notary|aus(lä|lae)nderbeh(ö|oe)rde|visa|apostille",
+     "category": "Financial & Legal Services"},
+    {"match": r"finanzamt|steuer|tax office", "category": "Taxes"},
 ]
 
 
 @dataclass(frozen=True)
 class Rule:
-    pattern: re.Pattern[str]
+    pattern: re.Pattern[str] | None
+    code: re.Pattern[str] | None
     merchant: str | None
     category: str | None
 
@@ -104,16 +133,19 @@ def load_rules(path: Path | None) -> list[Rule]:
     rules: list[Rule] = []
     for entry in raw:
         match = entry.get("match")
-        if not match:
+        code = entry.get("code")
+        if not match and not code:
             continue
         try:
-            pattern = re.compile(match, re.IGNORECASE)
+            pattern = re.compile(match, re.IGNORECASE) if match else None
+            code_pattern = re.compile(code, re.IGNORECASE) if code else None
         except re.error as exc:
-            log.warning("Skipping rule with bad regex %r: %s", match, exc)
+            log.warning("Skipping rule with bad regex %r/%r: %s", match, code, exc)
             continue
         rules.append(
             Rule(
                 pattern=pattern,
+                code=code_pattern,
                 merchant=(entry.get("merchant") or "").strip() or None,
                 category=(entry.get("category") or "").strip() or None,
             )
@@ -130,16 +162,35 @@ class Categorizer:
     def __init__(self, rules: list[Rule]) -> None:
         self.rules = rules
 
-    def apply(self, description: str, counterparty: str | None) -> tuple[str, str | None]:
+    def apply(
+        self,
+        description: str,
+        counterparty: str | None,
+        code: str | None = None,
+    ) -> tuple[str, str | None]:
         """Return (merchant_name, category_name_or_None).
 
         Matching runs against the raw text, before cleanup, because the noise
-        we strip sometimes carries the only identifying substring.
+        we strip sometimes carries the only identifying substring. `code` is
+        the bank transaction code (ISO 20022, e.g. "PMNT/MDOP/FEES"), which is
+        structured and far more reliable than text when the bank supplies it.
         """
         haystack = " ".join(filter(None, [counterparty or "", description or ""]))
         merchant = clean_merchant(counterparty or description)
 
         for rule in self.rules:
-            if rule.pattern.search(haystack):
-                return (rule.merchant or merchant), rule.category
+            if rule.code is not None:
+                if not code or not rule.code.search(code):
+                    continue
+            if rule.pattern is not None and not rule.pattern.search(haystack):
+                continue
+            return (rule.merchant or merchant), rule.category
         return merchant, None
+
+
+def transaction_code(raw: dict) -> str | None:
+    """Flatten a Berlin Group bank_transaction_code into "DESC/CODE/SUBCODE"."""
+    block = raw.get("bank_transaction_code") or {}
+    parts = [block.get("description"), block.get("code"), block.get("sub_code")]
+    joined = "/".join(str(p) for p in parts if p)
+    return joined or None

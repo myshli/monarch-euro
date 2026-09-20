@@ -30,6 +30,8 @@ from typing import Any
 
 import httpx
 
+from dataclasses import replace
+
 from ..models import SourceTransaction
 
 log = logging.getLogger(__name__)
@@ -208,7 +210,7 @@ class WiseClient:
             txn = self._normalize(account_key, account_uid, raw, currency)
             if txn is not None:
                 out.append(txn)
-        return out
+        return assign_occurrences(out)
 
     # -- normalization -----------------------------------------------------
 
@@ -269,3 +271,30 @@ class WiseClient:
             pending=False,
             raw=raw,
         )
+
+def assign_occurrences(transactions: list[SourceTransaction]) -> list[SourceTransaction]:
+    """Number otherwise-identical same-day transactions in bank order.
+
+    Only rows lacking the bank's own reference need this; the rest already
+    have a unique identity. Ordering comes from the bank's response, which is
+    stable for booked transactions, so the ordinal is stable across re-fetches.
+    """
+    seen: dict[str, int] = {}
+    out: list[SourceTransaction] = []
+    for txn in transactions:
+        if txn.reference:
+            out.append(txn)
+            continue
+        signature = "|".join(
+            [
+                txn.booked_on.isoformat(),
+                f"{txn.amount:.2f}",
+                txn.currency,
+                (txn.counterparty or "").strip().lower(),
+                (txn.description or "").strip().lower(),
+            ]
+        )
+        index = seen.get(signature, 0)
+        seen[signature] = index + 1
+        out.append(replace(txn, occurrence=index) if index else txn)
+    return out

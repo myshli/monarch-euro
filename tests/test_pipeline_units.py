@@ -261,3 +261,76 @@ def test_note_records_original_amount_and_rate(tmp_path):
         fx = StubbedFx(store=store, target_currency="USD")
         note = fx.convert(make_txn()).note(include_original=True)
     assert note == "EUR -42.00 @ 1.146 ECB 2026-09-18 = USD -48.13"
+
+
+# -- occurrence disambiguation ---------------------------------------------
+
+def test_identical_same_day_transactions_get_distinct_keys():
+    """N26 leaves entry_reference null, so the hash must not collapse repeats.
+
+    Two identical coffees on one day are two transactions, not one.
+    """
+    from monarch_euro.sources.enablebanking import assign_occurrences
+
+    rows = assign_occurrences([make_txn(reference=None) for _ in range(3)])
+    assert len({t.dedupe_key() for t in rows}) == 3
+
+
+def test_occurrence_ordinals_are_stable_across_refetches():
+    from monarch_euro.sources.enablebanking import assign_occurrences
+
+    first = [t.dedupe_key() for t in assign_occurrences([make_txn() for _ in range(3)])]
+    second = [t.dedupe_key() for t in assign_occurrences([make_txn() for _ in range(3)])]
+    assert first == second
+
+
+def test_rows_with_a_reference_are_left_alone():
+    from monarch_euro.sources.enablebanking import assign_occurrences
+
+    rows = assign_occurrences([make_txn(reference="R1"), make_txn(reference="R2")])
+    assert [t.occurrence for t in rows] == [0, 0]
+    assert rows[0].dedupe_key() == "acct-1:ref:R1"
+
+
+def test_different_transactions_do_not_share_an_ordinal():
+    from monarch_euro.sources.enablebanking import assign_occurrences
+
+    rows = assign_occurrences(
+        [make_txn(counterparty="REWE"), make_txn(counterparty="EDEKA"), make_txn(counterparty="REWE")]
+    )
+    assert [t.occurrence for t in rows] == [0, 0, 1]
+
+
+# -- transfer and code rules -----------------------------------------------
+
+def test_incoming_top_up_is_a_transfer_not_income():
+    """Money moved in from another tracked account must not count as income."""
+    cat = Categorizer(load_rules(None))
+    _, category = cat.apply("Thank you for adding funds", None)
+    assert category == "Transfer"
+
+
+def test_top_up_fee_is_a_fee_not_a_transfer():
+    cat = Categorizer(load_rules(None))
+    _, category = cat.apply("N26 account instant top-up fee", None, "PMNT/MDOP/FEES")
+    assert category == "Financial & Legal Services"
+
+
+def test_iso_fee_code_categorizes_without_matching_text():
+    cat = Categorizer(load_rules(None))
+    _, category = cat.apply("irgendein unbekannter text", None, "PMNT/MDOP/FEES")
+    assert category == "Financial & Legal Services"
+
+
+def test_code_rule_does_not_fire_without_the_code():
+    cat = Categorizer(load_rules(None))
+    _, category = cat.apply("irgendein unbekannter text", None, None)
+    assert category is None
+
+
+def test_transaction_code_flattens_berlin_group_block():
+    from monarch_euro.categorize import transaction_code
+
+    raw = {"bank_transaction_code": {"description": "PMNT", "code": "MDOP", "sub_code": "FEES"}}
+    assert transaction_code(raw) == "PMNT/MDOP/FEES"
+    assert transaction_code({}) is None
