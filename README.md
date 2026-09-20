@@ -40,8 +40,9 @@ Revolut (US)  ──→ connect natively in Monarch (Plaid) — no pipeline need
 - **Dedupe.** Every run re-fetches an overlapping window, because banks revise
   and late-post rows. A SQLite ledger keyed on the source's own reference
   (`entry_reference` for Enable Banking, `referenceNumber` for Wise) with a
-  content-hash fallback guarantees each transaction reaches Monarch exactly
-  once. This is what makes the job safe to run on a timer.
+  content-hash fallback identifies previously imported transactions. A process
+  lock prevents overlapping runs against the same database. Uncertain writes
+  stop automatic retries until you review them in Monarch.
 - **Currency.** Each Wise balance maps to its own Monarch account, so the USD
   balance is never run through a conversion it does not need.
 - **Sink.** Monarch publishes no supported customer API, so this uses the
@@ -155,6 +156,9 @@ The ledger means a later normal run will not re-import any of it.
 | `link <key>` | Authorize one bank (browser flow) |
 | `unlink <key>` | Close a session; the dedupe ledger is preserved |
 | `sync` | Fetch, convert and push |
+| `export` | Save a CSV with separate export history |
+| `confirm-export <path>` | Record a completed manual CSV import |
+| `resolve-write <key>` | Resolve an uncertain write after review in Monarch |
 | `status` | Sessions, consent expiry, mapped accounts, recent runs |
 | `monarch-cookie` | Refresh the Monarch session from a pasted Cookie header |
 | `wise-probe` | List Wise profiles/balances and test statement access |
@@ -294,7 +298,9 @@ except the Monarch session pickle, which is also credential-equivalent.
 Covers dedupe-key stability (including that a transaction keeps its identity
 when it settles), credit/debit sign handling, merchant cleanup, rule matching,
 ledger behaviour past SQLite's parameter limit, and FX rounding with the
-weekend/holiday walk-back. No network or credentials required.
+weekend fallback and authoritative holiday lookup. Recovery tests cover lost
+responses, failed exports, overlapping runs, and manual import confirmation.
+No network or credentials required.
 
 ## Operations
 

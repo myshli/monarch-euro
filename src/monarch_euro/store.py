@@ -1,19 +1,20 @@
 """SQLite-backed state: bank sessions, account mapping, dedupe ledger, FX cache.
 
-The dedupe ledger is what makes the sync safe to run on a timer. Every run
-re-fetches an overlapping window from the bank (banks revise and late-post
-transactions), and the ledger guarantees each one reaches Monarch exactly
-once, no matter how many times it appears in a fetch.
+Confirmed imports and uncertain writes have separate ledgers. A process lock
+serializes sync, export, and recovery against the same state database.
 """
 
 from __future__ import annotations
 
+import fcntl
 import sqlite3
 from contextlib import contextmanager
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Iterator
+
+from .models import ConvertedTransaction
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
@@ -46,6 +47,27 @@ CREATE TABLE IF NOT EXISTS posted (
     posted_at       TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS posted_account_date ON posted (account_uid, booked_on);
+
+CREATE TABLE IF NOT EXISTS pending_writes (
+    dedupe_key TEXT PRIMARY KEY,
+    account_uid TEXT NOT NULL,
+    account_id TEXT NOT NULL,
+    merchant TEXT NOT NULL,
+    booked_on TEXT NOT NULL,
+    amount TEXT NOT NULL,
+    currency TEXT NOT NULL,
+    started_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS exported (
+    dedupe_key TEXT NOT NULL,
+    path TEXT NOT NULL,
+    account_uid TEXT NOT NULL,
+    booked_on TEXT NOT NULL,
+    amount TEXT NOT NULL,
+    currency TEXT NOT NULL,
+    exported_at TEXT NOT NULL,
+    PRIMARY KEY (dedupe_key, path)
+);
 
 CREATE TABLE IF NOT EXISTS fx_rates (
     base            TEXT NOT NULL,
@@ -101,6 +123,81 @@ class Store:
         except Exception:
             self.conn.rollback()
             raise
+
+    @contextmanager
+    def exclusive(self) -> Iterator[None]:
+        """Serialize operations without holding a database transaction over HTTP."""
+        with self.path.with_suffix(self.path.suffix + ".lock").open("a") as handle:
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise RuntimeError("Another sync, export, or recovery is active. Try again later.")
+            try:
+                yield
+            finally:
+                fcntl.flock(handle, fcntl.LOCK_UN)
+
+    def begin_write(self, txn: ConvertedTransaction, account_id: str, merchant: str) -> None:
+        with self.tx() as conn:
+            conn.execute(
+                "INSERT INTO pending_writes VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (txn.source.dedupe_key(), txn.source.account_uid, account_id, merchant,
+                 txn.source.booked_on.isoformat(), str(txn.amount), txn.currency, _now()),
+            )
+
+    def pending_writes(self) -> list[sqlite3.Row]:
+        return list(self.conn.execute("SELECT * FROM pending_writes ORDER BY started_at"))
+
+    def resolve_write(self, key: str, monarch_id: str | None) -> None:
+        if monarch_id is not None and not monarch_id.strip():
+            raise ValueError("The Monarch transaction ID cannot be empty.")
+        row = self.conn.execute(
+            "SELECT * FROM pending_writes WHERE dedupe_key = ?", (key,)
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"No uncertain write for {key!r}.")
+        if monarch_id:
+            self.mark_posted(key, row["account_uid"], monarch_id,
+                             date.fromisoformat(row["booked_on"]),
+                             Decimal(row["amount"]), row["currency"])
+        else:
+            with self.tx() as conn:
+                conn.execute("DELETE FROM pending_writes WHERE dedupe_key = ?", (key,))
+
+    def filter_unexported(self, keys: list[str]) -> set[str]:
+        fresh = self.filter_new(keys)
+        for row in self.conn.execute("SELECT dedupe_key, path FROM exported"):
+            if Path(row["path"]).is_file():
+                fresh.discard(row["dedupe_key"])
+        return fresh
+
+    def mark_exported(self, transactions: list[ConvertedTransaction], path: Path) -> None:
+        with self.tx() as conn:
+            conn.executemany(
+                "INSERT OR REPLACE INTO exported VALUES (?, ?, ?, ?, ?, ?, ?)",
+                [(txn.source.dedupe_key(), str(path.resolve()), txn.source.account_uid,
+                  txn.source.booked_on.isoformat(), str(txn.amount), txn.currency, _now())
+                 for txn in transactions],
+            )
+
+    def confirm_export(self, path: Path) -> int:
+        rows = self.conn.execute(
+            "SELECT * FROM exported WHERE path = ?", (str(path.resolve()),)
+        ).fetchall()
+        if not rows:
+            raise ValueError("No export history for this path. Use the original export path.")
+        if self.pending_writes():
+            raise ValueError("Resolve uncertain Monarch writes before confirming an export.")
+        with self.tx() as conn:
+            before = conn.total_changes
+            conn.executemany(
+                """INSERT OR IGNORE INTO posted
+                   (dedupe_key, account_uid, monarch_txn_id, booked_on, amount, currency, posted_at)
+                   VALUES (?, ?, NULL, ?, ?, ?, ?)""",
+                [(row["dedupe_key"], row["account_uid"], row["booked_on"], row["amount"],
+                  row["currency"], _now()) for row in rows],
+            )
+            return conn.total_changes - before
 
     # -- sessions ----------------------------------------------------------
 
@@ -242,6 +339,7 @@ class Store:
                     _now(),
                 ),
             )
+            conn.execute("DELETE FROM pending_writes WHERE dedupe_key = ?", (dedupe_key,))
 
     def posted_count(self) -> int:
         return int(self.conn.execute("SELECT COUNT(*) AS c FROM posted").fetchone()["c"])
@@ -273,6 +371,12 @@ class Store:
 
     def start_run(self) -> int:
         with self.tx() as conn:
+            # The caller holds the process lock. Earlier running rows are orphaned.
+            conn.execute(
+                """UPDATE runs SET status = 'error', finished_at = ?,
+                   error = 'Previous process ended before run completion'
+                   WHERE status = 'running'""", (_now(),)
+            )
             cur = conn.execute(
                 "INSERT INTO runs (started_at, status) VALUES (?, 'running')", (_now(),)
             )

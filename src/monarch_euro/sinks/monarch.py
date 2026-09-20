@@ -338,7 +338,10 @@ class MonarchSink:
         if errors:
             raise MonarchError(f"Monarch rejected transaction {when} {merchant!r}: {errors}")
         transaction = created.get("transaction") or {}
-        return transaction.get("id")
+        transaction_id = transaction.get("id")
+        if not transaction_id:
+            raise MonarchError("Monarch returned no transaction ID. The write requires review.")
+        return transaction_id
 
 
 def format_amount(value: Decimal) -> str:

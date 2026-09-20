@@ -143,15 +143,46 @@ so this should reach you by Telegram rather than as silence.
 
 ### Duplicate transactions in Monarch
 
-Should not happen: every transaction is keyed on the source's own reference,
-or a content hash plus an occurrence ordinal, and the ledger is checked before
-every write. If it does:
+The ledger identifies transactions by source reference or content hash with an
+occurrence ordinal. A process lock prevents overlapping runs against the same
+database. Separate machines with separate databases can still create duplicates.
+If duplicates occur:
 
 1. Delete the duplicates in Monarch
 2. Confirm only one machine is writing — your Mac should be `DRY_RUN=true`
 3. Send me the two rows; matching duplicates means a dedupe-key bug
 
 The likeliest cause is a second machine syncing with its own ledger.
+
+### Uncertain Monarch writes
+
+Before each write, sync saves its intent in SQLite. A successful response must
+contain a transaction ID. A lost response or failed local commit leaves an
+uncertain write. The next sync stops before any remote writes.
+
+1. Run `monarch-euro status` on the sync host.
+2. Find each listed transaction in its Monarch account by date, merchant, and amount.
+3. If the transaction exists, record its Monarch ID:
+
+   ```bash
+   monarch-euro resolve-write 'DEDUPE_KEY' --monarch-id 'TRANSACTION_ID'
+   ```
+
+4. If the transaction is absent, release it for retry:
+
+   ```bash
+   monarch-euro resolve-write 'DEDUPE_KEY' --retry
+   ```
+
+5. Run `monarch-euro sync`.
+
+The recovery command does not create or delete remote transactions. The
+`--retry` option permits the next sync to send the transaction again. Recovery
+uses the same process lock as sync and export.
+
+If another process holds the lock, wait for it to finish before retrying.
+After a process exits, the operating system releases its lock. The next sync
+marks unfinished run records as errors.
 
 ---
 
@@ -240,9 +271,31 @@ ssh root@167.99.150.73 'cd /opt/monarch-euro && sudo -u monarch .venv/bin/monarc
 ssh root@167.99.150.73 'cd /opt/monarch-euro && sudo -u monarch .venv/bin/monarch-euro export --all --no-mark'
 ```
 
-It writes a Monarch-importable CSV under `/var/lib/monarch-euro/exports/` and,
-by default, records the rows as exported so repeated exports never repeat
-transactions. Upload at **Monarch → Settings → Data → Import transactions**.
+Each export writes a unique file under `/var/lib/monarch-euro/exports/`.
+Export history changes only after the complete file is saved. Export history
+is separate from the ledger of confirmed imports. Repeated exports skip rows
+with an existing export file or a confirmed import.
+
+1. Pause the sync timer before the manual upload.
+2. Upload the file at **Monarch → Settings → Data → Import transactions**.
+3. Make sure that Monarch imported every row.
+4. On the sync host, record the completed import with the original export path:
+
+   ```bash
+   monarch-euro confirm-export /var/lib/monarch-euro/exports/monarch-import-DATE-ID.csv
+   ```
+
+5. Resume the sync timer.
+
+If the upload is incomplete, finish or reconcile it before confirmation.
+The confirmation command records every row in that export as imported.
+An export alone does not stop live sync from importing those transactions.
+The `--no-mark` option omits export history, so those files cannot use
+`confirm-export`.
+
+Existing ledger entries remain unchanged after this update. Older versions
+used the same ledger for exports and imports. Those entries require manual
+review if an older export failed or was never uploaded.
 
 `Nothing new to export` after a successful sync is correct — everything is
 already in Monarch. Use `--all --no-mark` when you want the window regardless.

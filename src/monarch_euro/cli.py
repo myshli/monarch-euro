@@ -335,6 +335,15 @@ def cmd_status(config: Config, args: argparse.Namespace) -> int:
 
         print(f"\nTransactions posted to date: {store.posted_count()}")
 
+        pending = store.pending_writes()
+        print(f"\nUncertain Monarch writes ({len(pending)})")
+        for row in pending:
+            print(f"  {row['dedupe_key']}  {row['booked_on']} "
+                  f"{row['amount']} {row['currency']}  {row['merchant']} "
+                  f"account={row['account_id']}")
+        if pending:
+            print("  Review these in Monarch, then use resolve-write. See RUNBOOK.md.")
+
         runs = store.recent_runs(limit=args.runs)
         print(f"\nRecent runs ({len(runs)})")
         for row in runs:
@@ -342,6 +351,30 @@ def cmd_status(config: Config, args: argparse.Namespace) -> int:
                   f"fetched={row['fetched']} posted={row['posted']} skipped={row['skipped']}")
             if row["error"]:
                 print(f"         {row['error'][:160]}")
+    return 0
+
+
+def cmd_resolve_write(config: Config, args: argparse.Namespace) -> int:
+    with Store(config.db_path) as store, store.exclusive():
+        try:
+            store.resolve_write(args.key, args.monarch_id)
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+    print("Write recorded as posted." if args.monarch_id else "Write released for the next sync.")
+    return 0
+
+
+def cmd_confirm_export(config: Config, args: argparse.Namespace) -> int:
+    from pathlib import Path
+
+    with Store(config.db_path) as store, store.exclusive():
+        try:
+            count = store.confirm_export(Path(args.path))
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+    print(f"Recorded {count} manually imported transaction(s).")
     return 0
 
 
@@ -483,9 +516,13 @@ def cmd_export(config: Config, args: argparse.Namespace) -> int:
     sink = CsvSink(config.state_dir / "exports")
     fetched = skipped = 0
 
-    with Store(config.db_path) as store, FxConverter(
+    exported = []
+    seen_keys = set()
+    with Store(config.db_path) as store, store.exclusive(), FxConverter(
         store, config.target_currency, base_url=config.fx_base_url
     ) as fx:
+        if store.pending_writes():
+            raise RuntimeError("Resolve uncertain Monarch writes before exporting. See RUNBOOK.md.")
         batches: list[tuple[str, str, list]] = []
 
         problems: list[str] = []
@@ -506,6 +543,8 @@ def cmd_export(config: Config, args: argparse.Namespace) -> int:
             except Exception as exc:
                 problems.append(f"[{link.key}] {exc}")
 
+        if config.wise_accounts and not config.wise_token:
+            problems.append("[wise] WISE_TOKEN is empty. No Wise transactions were exported.")
         if config.wise_accounts and config.wise_token:
           try:
             with WiseClient(
@@ -532,13 +571,18 @@ def cmd_export(config: Config, args: argparse.Namespace) -> int:
                 continue
             if args.new_only:
                 keys = [t.dedupe_key() for t in txns]
-                new_keys = store.filter_new(keys)
+                new_keys = store.filter_unexported(keys)
                 fresh = [t for t, k in zip(txns, keys) if k in new_keys]
                 skipped += len(txns) - len(fresh)
             else:
                 fresh = txns
             if not fresh:
                 continue
+            before_dedupe = len(fresh)
+            fresh = list({t.dedupe_key(): t for t in fresh
+                          if t.dedupe_key() not in seen_keys}.values())
+            skipped += before_dedupe - len(fresh)
+            seen_keys.update(t.dedupe_key() for t in fresh)
             fx.prefetch(fresh)
             for txn in fresh:
                 converted = fx.convert(txn)
@@ -547,14 +591,11 @@ def cmd_export(config: Config, args: argparse.Namespace) -> int:
                 )
                 sink.add(converted, account_name, merchant, category,
                          converted.note(config.note_original_amount))
-                if args.mark:
-                    store.mark_posted(
-                        dedupe_key=txn.dedupe_key(), account_uid=txn.account_uid,
-                        monarch_txn_id=None, booked_on=txn.booked_on,
-                        amount=converted.amount, currency=converted.currency,
-                    )
+                exported.append(converted)
 
-    path = sink.write()
+        path = sink.write()
+        if args.mark and path:
+            store.mark_exported(exported, path)
     print(f"fetched={fetched} written={len(sink)} skipped(already exported)={skipped}"
           + (f" errors={len(problems)}" if problems else ""))
     for problem in problems:
@@ -562,13 +603,15 @@ def cmd_export(config: Config, args: argparse.Namespace) -> int:
     if path:
         print(f"\n{path}")
         print("\nUpload at app.monarch.com -> Settings -> Data -> Import transactions")
+        if args.mark:
+            print(f"After a complete upload, run: monarch-euro confirm-export {path}")
         if not args.mark:
             print("NOT marked as exported (--mark to record them and avoid duplicates next time)")
     else:
         print("Nothing new to export."
               + (" Use --all to export the whole window regardless of the ledger."
                  if not args.new_only is False else ""))
-    return 1 if problems and not len(sink) else 0
+    return 1 if problems else 0
 
 
 def cmd_monarch_cookie(config: Config, args: argparse.Namespace) -> int:
@@ -704,6 +747,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--currency", help="only probe this currency")
     p.add_argument("--sample", type=int, default=3, help="sample transactions to print")
     p.set_defaults(func=cmd_wise_probe)
+
+    p = sub.add_parser("resolve-write", help="resolve an uncertain write after review in Monarch")
+    p.add_argument("key", help="dedupe key from status")
+    resolution = p.add_mutually_exclusive_group(required=True)
+    resolution.add_argument("--monarch-id", help="ID of the transaction found in Monarch")
+    resolution.add_argument("--retry", action="store_true",
+                            help="allow retry after confirming the transaction is absent")
+    p.set_defaults(func=cmd_resolve_write)
+
+    p = sub.add_parser("confirm-export", help="record a completed manual CSV import")
+    p.add_argument("path", help="original path of the completely imported export")
+    p.set_defaults(func=cmd_confirm_export)
 
     p = sub.add_parser("rules-init", help="write a starter rules.json")
     p.add_argument("--force", action="store_true")

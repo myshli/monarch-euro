@@ -16,6 +16,9 @@ from __future__ import annotations
 
 import csv
 import logging
+import os
+import tempfile
+import uuid
 from datetime import date
 from pathlib import Path
 
@@ -61,12 +64,29 @@ class CsvSink:
         if not self._rows:
             return None
         stamp = stamp or date.today()
-        path = self.out_dir / f"monarch-import-{stamp:%Y%m%d}.csv"
-        # Sort oldest-first so Monarch's running balance reads naturally.
+        path = self.out_dir / f"monarch-import-{stamp:%Y%m%d}-{uuid.uuid4().hex}.csv"
         self._rows.sort(key=lambda r: (r["Date"], r["Account"]))
-        with path.open("w", newline="", encoding="utf-8") as handle:
-            writer = csv.DictWriter(handle, fieldnames=COLUMNS)
-            writer.writeheader()
-            writer.writerows(self._rows)
+        # Publish only complete files. The ledger changes after this succeeds.
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", newline="", encoding="utf-8", dir=self.out_dir,
+                prefix=".monarch-import-", suffix=".tmp", delete=False,
+            ) as handle:
+                temporary = Path(handle.name)
+                writer = csv.DictWriter(handle, fieldnames=COLUMNS)
+                writer.writeheader()
+                writer.writerows(self._rows)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, path)
+            directory_fd = os.open(self.out_dir, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
         log.info("Wrote %d rows to %s", len(self._rows), path)
         return path

@@ -112,12 +112,12 @@ class FxConverter:
         if cached is not None:
             return cached
 
-        # The requested day may be a weekend or ECB holiday. Walk back up to a
-        # week through the cache before spending an HTTP call.
-        for offset in range(1, 8):
-            probe = on - timedelta(days=offset)
-            cached = self.store.get_fx_rate(currency, self.target, probe)
-            if cached is not None:
+        # Only a direct Friday publication proves the weekend fallback.
+        # Missing weekdays and holidays require an authoritative API lookup.
+        if on.weekday() >= 5:
+            friday = on - timedelta(days=on.weekday() - 4)
+            cached = self.store.get_fx_rate(currency, self.target, friday)
+            if cached is not None and cached[1] == friday:
                 rate, rate_date = cached
                 self.store.put_fx_rate(currency, self.target, on, rate, rate_date)
                 return rate, rate_date
