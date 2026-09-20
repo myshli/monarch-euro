@@ -22,7 +22,7 @@ from typing import Any, Coroutine, TypeVar
 from monarchmoney import MonarchMoney, RequireMFAException
 
 from ..models import ConvertedTransaction
-from .monarch_compat import build_client, patch_endpoints
+from .monarch_compat import build_client, build_session_client, patch_endpoints
 
 log = logging.getLogger(__name__)
 
@@ -47,6 +47,9 @@ class MonarchSink:
         mfa_secret: str,
         session_path: Path,
         token: str = "",
+        session_cookie: str = "",
+        csrf_token: str = "",
+        cookie_name: str = "sessionid",
         default_category: str = "Uncategorized",
         update_balance: bool = True,
         dry_run: bool = False,
@@ -56,6 +59,9 @@ class MonarchSink:
         self.mfa_secret = mfa_secret
         self.session_path = session_path
         self.token = token
+        self.session_cookie = session_cookie
+        self.csrf_token = csrf_token
+        self.cookie_name = cookie_name
         self.default_category = default_category
         self.update_balance = update_balance
         self.dry_run = dry_run
@@ -63,7 +69,12 @@ class MonarchSink:
         self._loop = asyncio.new_event_loop()
         session_path.parent.mkdir(parents=True, exist_ok=True)
         patch_endpoints()
-        if token:
+        if session_cookie and csrf_token:
+            self._mm = build_session_client(
+                session_cookie, csrf_token, session_path.parent, cookie_name=cookie_name
+            )
+            self._mm._session_file = str(session_path)
+        elif token:
             self._mm = build_client(token, session_path.parent)
             self._mm._session_file = str(session_path)
         else:
@@ -102,7 +113,7 @@ class MonarchSink:
         # A browser-session token skips login entirely, which is the only
         # route that still works: Monarch now answers programmatic password
         # logins with CAPTCHA_REQUIRED.
-        if self.token:
+        if (self.session_cookie and self.csrf_token) or self.token:
             self._logged_in = True
             return
 

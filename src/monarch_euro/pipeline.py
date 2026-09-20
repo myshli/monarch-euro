@@ -103,6 +103,10 @@ def sync(config: Config) -> SyncResult:
             password=config.monarch_password,
             mfa_secret=config.monarch_mfa_secret,
             session_path=config.monarch_session_path,
+            token=config.monarch_token,
+            session_cookie=config.monarch_session_cookie,
+            csrf_token=config.monarch_csrf_token,
+            cookie_name=config.monarch_cookie_name,
             dry_run=config.dry_run,
         ) as monarch:
 

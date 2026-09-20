@@ -69,21 +69,57 @@ def patch_endpoints() -> None:
         MonarchMoneyEndpoints.BASE_URL = API_BASE
 
 
+def _common_headers(state_dir: Path) -> dict[str, str]:
+    return {
+        "Client-Platform": "web",
+        "device-uuid": _stable_device_uuid(state_dir),
+        "monarch-client": CLIENT_NAME,
+        "monarch-client-version": CLIENT_VERSION,
+        "User-Agent": BROWSER_UA,
+        "Origin": "https://app.monarch.com",
+        "Referer": "https://app.monarch.com/",
+    }
+
+
 def build_client(token: str, state_dir: Path, timeout: int = 30) -> MonarchMoney:
-    """Return a MonarchMoney client authenticated by an existing session token."""
+    """Client authenticated by a bearer token (the pre-CAPTCHA login path)."""
     patch_endpoints()
     client = MonarchMoney(timeout=timeout)
     client.set_token(token)
     client._headers["Authorization"] = f"Token {token}"
-    client._headers.update(
+    client._headers.update(_common_headers(state_dir))
+    return client
+
+
+def build_session_client(
+    session_cookie: str,
+    csrf_token: str,
+    state_dir: Path,
+    timeout: int = 30,
+    cookie_name: str = "sessionid",
+) -> MonarchMoney:
+    """Client authenticated by an existing browser session.
+
+    This is how Monarch's own web app authenticates: a session cookie plus a
+    matching CSRF token, no bearer anywhere. Reusing a session the account
+    holder established interactively sidesteps the login CAPTCHA without
+    defeating it - we simply never log in.
+
+    The library sends `self._headers` on every GraphQL call, so setting the
+    Cookie header here covers all of them.
+    """
+    patch_endpoints()
+    client = MonarchMoney(timeout=timeout)
+    # Satisfies the library's own "are we authenticated?" checks; the cookie
+    # is what the server actually honours.
+    client.set_token(session_cookie)
+    headers = _common_headers(state_dir)
+    headers.update(
         {
-            "Client-Platform": "web",
-            "device-uuid": _stable_device_uuid(state_dir),
-            "monarch-client": CLIENT_NAME,
-            "monarch-client-version": CLIENT_VERSION,
-            "User-Agent": BROWSER_UA,
-            "Origin": "https://app.monarch.com",
-            "Referer": "https://app.monarch.com/",
+            "Cookie": f"{cookie_name}={session_cookie}; csrftoken={csrf_token}",
+            "x-csrftoken": csrf_token,
         }
     )
+    client._headers.pop("Authorization", None)
+    client._headers.update(headers)
     return client

@@ -115,6 +115,9 @@ def cmd_doctor(config: Config, args: argparse.Namespace) -> int:
             mfa_secret=config.monarch_mfa_secret,
             session_path=config.monarch_session_path,
             token=config.monarch_token,
+            session_cookie=config.monarch_session_cookie,
+            csrf_token=config.monarch_csrf_token,
+            cookie_name=config.monarch_cookie_name,
             dry_run=True,
         ) as monarch:
             monarch.refresh_metadata()
