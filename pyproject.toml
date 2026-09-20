@@ -1,0 +1,26 @@
+[project]
+name = "monarch-euro"
+version = "0.1.0"
+description = "Import N26 / Revolut / Wise transactions into Monarch Money, converted to USD."
+requires-python = ">=3.11"
+dependencies = [
+    "httpx>=0.27",
+    "PyJWT[crypto]>=2.8",
+    "monarchmoney>=0.1.13",
+]
+
+[project.scripts]
+monarch-euro = "monarch_euro.cli:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,16 @@
+services:
+  sync:
+    build: .
+    image: monarch-euro:latest
+    env_file: .env
+    environment:
+      STATE_DIR: /data
+      EB_PRIVATE_KEY_PATH: /secrets/enablebanking.pem
+    volumes:
+      - ./state:/data
+      - ./secrets:/secrets:ro
+    # One-shot container; the host timer invokes it. Override the command for
+    # interactive work, e.g.:
+    #   docker compose run --rm sync link n26
+    #   docker compose run --rm sync status
+    restart: "no"
