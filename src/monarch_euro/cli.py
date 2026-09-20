@@ -488,19 +488,26 @@ def cmd_export(config: Config, args: argparse.Namespace) -> int:
     ) as fx:
         batches: list[tuple[str, str, list]] = []
 
+        problems: list[str] = []
+
         for session_row in store.all_sessions():
             link = next((l for l in config.links if l.key == session_row["link_key"]), None)
             if link is None:
                 continue
-            with _client(config) as eb:
-                for account in store.accounts_for(link.key):
-                    txns = eb.transactions(
-                        link.key, account["account_uid"], date_from,
-                        include_pending=config.include_pending,
-                    )
-                    batches.append((link.key, link.monarch_account_name, txns))
+            # One bank being unavailable must not discard the others' data.
+            try:
+                with _client(config) as eb:
+                    for account in store.accounts_for(link.key):
+                        txns = eb.transactions(
+                            link.key, account["account_uid"], date_from,
+                            include_pending=config.include_pending,
+                        )
+                        batches.append((link.key, link.monarch_account_name, txns))
+            except Exception as exc:
+                problems.append(f"[{link.key}] {exc}")
 
         if config.wise_accounts and config.wise_token:
+          try:
             with WiseClient(
                 token=config.wise_token, private_key_path=config.wise_private_key_path
             ) as wise:
@@ -516,6 +523,8 @@ def cmd_export(config: Config, args: argparse.Namespace) -> int:
                         f"wise-{wa.currency.lower()}", pid, b.get("id"), wa.currency, date_from
                     )
                     batches.append((f"wise-{wa.currency.lower()}", wa.monarch_account_name, txns))
+          except Exception as exc:
+            problems.append(f"[wise] {exc}")
 
         for _key, account_name, txns in batches:
             fetched += len(txns)
@@ -546,15 +555,20 @@ def cmd_export(config: Config, args: argparse.Namespace) -> int:
                     )
 
     path = sink.write()
-    print(f"fetched={fetched} written={len(sink)} skipped(already exported)={skipped}")
+    print(f"fetched={fetched} written={len(sink)} skipped(already exported)={skipped}"
+          + (f" errors={len(problems)}" if problems else ""))
+    for problem in problems:
+        print(f"  WARN {problem}", file=sys.stderr)
     if path:
         print(f"\n{path}")
         print("\nUpload at app.monarch.com -> Settings -> Data -> Import transactions")
         if not args.mark:
             print("NOT marked as exported (--mark to record them and avoid duplicates next time)")
     else:
-        print("Nothing new to export.")
-    return 0
+        print("Nothing new to export."
+              + (" Use --all to export the whole window regardless of the ledger."
+                 if not args.new_only is False else ""))
+    return 1 if problems and not len(sink) else 0
 
 
 def cmd_monarch_cookie(config: Config, args: argparse.Namespace) -> int:

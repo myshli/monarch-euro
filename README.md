@@ -296,6 +296,21 @@ when it settles), credit/debit sign handling, merchant cleanup, rule matching,
 ledger behaviour past SQLite's parameter limit, and FX rounding with the
 weekend/holiday walk-back. No network or credentials required.
 
+## Operations
+
+[**RUNBOOK.md**](RUNBOOK.md) covers what to do when something fails, the
+maintenance that recurs on a schedule, and how to control the timer. Every
+failure sends a Telegram alert naming its own fix; the runbook expands each
+one into commands.
+
+The short version:
+
+| Cadence | Task |
+|---|---|
+| When alerted (weeks) | `monarch-cookie` — refresh the Monarch session |
+| Every 180 days | `link n26` — PSD2 caps bank consent |
+| Occasionally | Edit `rules.json` for new merchants |
+
 ## Legal
 
 - [Privacy Notice](PRIVACY.md) — what data the tool touches and where it goes
