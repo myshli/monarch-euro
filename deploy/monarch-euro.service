@@ -23,5 +23,9 @@ ProtectControlGroups=true
 RestrictAddressFamilies=AF_INET AF_INET6
 MemoryDenyWriteExecute=true
 
+# A crash before Python starts (bad venv, missing env file) never reaches the
+# in-process notifier, so systemd reports those itself.
+OnFailure=monarch-euro-failure.service
+
 [Install]
 WantedBy=multi-user.target

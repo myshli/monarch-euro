@@ -9,6 +9,7 @@ from datetime import date, datetime, timedelta
 from urllib.parse import parse_qs, urlparse
 
 from .categorize import write_default_rules
+from .notify import format_failure, send
 from .config import Config, ConfigError, load_config
 from .pipeline import _rules_path, refresh_accounts, sync
 from .sinks.csvfile import CsvSink
@@ -263,11 +264,46 @@ def _code_from_url(pasted: str) -> str | None:
 
 
 def cmd_sync(config: Config, args: argparse.Namespace) -> int:
-    result = sync(config)
+    import socket
+
+    host = socket.gethostname()
+    try:
+        result = sync(config)
+    except Exception as exc:
+        # An unhandled crash is exactly the case a silent timer would hide.
+        send(config.telegram_bot_token, config.telegram_chat_id,
+             format_failure(host, [f"{type(exc).__name__}: {exc}"], 0, 0))
+        raise
+
     print(result.summary())
     for error in result.errors:
         print(f"ERROR: {error}", file=sys.stderr)
+
+    if result.errors:
+        send(config.telegram_bot_token, config.telegram_chat_id,
+             format_failure(host, result.errors, result.fetched, result.posted))
+    elif config.notify_on_success and result.posted:
+        send(config.telegram_bot_token, config.telegram_chat_id,
+             f"<b>monarch-euro</b> posted {result.posted} transaction(s) on {host}")
+
     return 0 if result.ok else 1
+
+
+def cmd_notify_test(config: Config, args: argparse.Namespace) -> int:
+    import socket
+
+    if not config.telegram_bot_token or not config.telegram_chat_id:
+        print("TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not set.")
+        return 2
+    ok = send(
+        config.telegram_bot_token,
+        config.telegram_chat_id,
+        format_failure(socket.gethostname(),
+                       ["This is a test. Bank consent lapsed - run: monarch-euro link n26"],
+                       fetched=12, posted=0),
+    )
+    print("Sent." if ok else "Failed to send - check the token and chat id.")
+    return 0 if ok else 1
 
 
 def cmd_status(config: Config, args: argparse.Namespace) -> int:
@@ -561,6 +597,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="record exported rows so they are not exported twice (default)")
     p.add_argument("--no-mark", dest="mark", action="store_false")
     p.set_defaults(func=cmd_export)
+
+    p = sub.add_parser("notify-test", help="send a sample failure notification")
+    p.set_defaults(func=cmd_notify_test)
 
     p = sub.add_parser("status", help="show sessions, accounts and recent runs")
     p.add_argument("--runs", type=int, default=10)

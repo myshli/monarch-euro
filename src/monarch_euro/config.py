@@ -88,6 +88,11 @@ class Config:
     monarch_cookie_name: str
     monarch_cookie_header: str
 
+    # --- Notifications ---
+    telegram_bot_token: str
+    telegram_chat_id: str
+    notify_on_success: bool
+
     # --- Behaviour ---
     target_currency: str
     fx_base_url: str
@@ -225,6 +230,9 @@ def load_config(dotenv: Path | None = None) -> Config:
         monarch_csrf_token=os.environ.get("MONARCH_CSRF_TOKEN", "").strip(),
         monarch_cookie_name=os.environ.get("MONARCH_COOKIE_NAME", "session_id").strip(),
         monarch_cookie_header=os.environ.get("MONARCH_COOKIE_HEADER", "").strip(),
+        telegram_bot_token=os.environ.get("TELEGRAM_BOT_TOKEN", "").strip(),
+        telegram_chat_id=os.environ.get("TELEGRAM_CHAT_ID", "").strip(),
+        notify_on_success=_flag("NOTIFY_ON_SUCCESS", False),
         target_currency=os.environ.get("TARGET_CURRENCY", "USD").upper(),
         fx_base_url=os.environ.get("FX_BASE_URL", "https://api.frankfurter.dev/v1").rstrip("/"),
         note_original_amount=_flag("NOTE_ORIGINAL_AMOUNT", True),

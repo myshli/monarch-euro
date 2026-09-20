@@ -350,3 +350,39 @@ def test_unknown_rule_categories_are_detected():
 def test_no_unknown_categories_when_all_exist():
     cat = Categorizer(load_rules(None))
     assert cat.unknown_categories(cat.referenced_categories()) == set()
+
+
+# -- notifications ---------------------------------------------------------
+
+def test_notify_is_skipped_when_unconfigured():
+    from monarch_euro.notify import send
+
+    assert send("", "", "hi") is False
+
+
+def test_failure_message_names_the_fix_for_a_lapsed_consent():
+    from monarch_euro.notify import format_failure
+
+    msg = format_failure("vps", ["[n26] consent expired: re-run link"], 0, 0)
+    assert "monarch-euro link n26" in msg
+
+
+def test_failure_message_names_the_fix_for_an_expired_session():
+    from monarch_euro.notify import format_failure
+
+    msg = format_failure("vps", ["401 Authentication credentials were not provided"], 0, 0)
+    assert "session expired" in msg.lower()
+
+
+def test_rate_limit_message_says_no_action_needed():
+    from monarch_euro.notify import format_failure
+
+    msg = format_failure("vps", ["the bank's PSD2 rate limit is exhausted"], 0, 0)
+    assert "no action needed" in msg
+
+
+def test_html_in_bank_errors_is_escaped():
+    from monarch_euro.notify import format_failure
+
+    msg = format_failure("vps", ["<script>bad</script>"], 0, 0)
+    assert "<script>" not in msg and "&lt;script&gt;" in msg
