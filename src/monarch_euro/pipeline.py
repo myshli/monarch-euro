@@ -14,6 +14,7 @@ from .models import SourceTransaction
 from .sinks.monarch import MonarchSink
 from .sources.enablebanking import (
     ApplicationNotActiveError,
+    AspspRateLimitedError,
     ConsentExpiredError,
     EnableBankingClient,
     extract_accounts,
@@ -107,6 +108,7 @@ def sync(config: Config) -> SyncResult:
             session_cookie=config.monarch_session_cookie,
             csrf_token=config.monarch_csrf_token,
             cookie_name=config.monarch_cookie_name,
+            cookie_header=config.monarch_cookie_header,
             dry_run=config.dry_run,
         ) as monarch:
 
@@ -135,6 +137,11 @@ def sync(config: Config) -> SyncResult:
                         date_from=date_from,
                         result=result,
                     )
+                except AspspRateLimitedError as exc:
+                    # Expected and self-healing; log without a traceback.
+                    message = f"[{link_key}] {exc}"
+                    log.warning(message)
+                    result.errors.append(message)
                 except ApplicationNotActiveError as exc:
                     message = f"[{link_key}] {exc}"
                     log.error(message)

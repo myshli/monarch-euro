@@ -73,14 +73,14 @@ DEFAULT_RULES: list[dict[str, str]] = [
      "category": "Groceries"},
     {"match": r"\bdm\b|rossmann|m(ü|ue)ller drogerie", "category": "Shopping"},
     {"match": r"db vertrieb|deutsche bahn|\bbvg\b|\bhvv\b|\bmvg\b|trainline|flixbus|\bsncf\b",
-     "category": "Travel"},
+     "category": "Public Transit"},
     {"match": r"uber|bolt\.eu|free now|taxi", "category": "Taxi & Ride Shares"},
     {"match": r"netflix|spotify|disney|youtube premium|apple\.com/bill|patreon",
      "category": "Entertainment & Recreation"},
     {"match": r"amazon|amzn|zalando|ikea|mediamarkt|saturn", "category": "Shopping"},
     {"match": r"vodafone|telekom|\bo2\b|congstar|1und1|1&1", "category": "Phone"},
     {"match": r"github|openai|anthropic|adobe|figma|notion|linear\.app|vercel|"
-              r"hetzner|digitalocean", "category": "Software & Tech"},
+              r"hetzner|digitalocean", "category": "Software"},
 
     # -- Housing and bills
     {"match": r"\bmiete\b|\brent\b|hausverwaltung", "category": "Rent"},

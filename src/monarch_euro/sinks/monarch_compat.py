@@ -91,12 +91,35 @@ def build_client(token: str, state_dir: Path, timeout: int = 30) -> MonarchMoney
     return client
 
 
+def build_raw_cookie_client(
+    cookie_header: str,
+    csrf_token: str,
+    state_dir: Path,
+    timeout: int = 30,
+) -> MonarchMoney:
+    """Client authenticated by a verbatim Cookie header.
+
+    Preferred over naming individual cookies: Monarch sits behind Cloudflare,
+    whose `cf_clearance` and `__cf_bm` cookies are part of what makes a
+    request acceptable. Passing the header through whole keeps them, and
+    survives Monarch renaming its session cookie.
+    """
+    patch_endpoints()
+    client = MonarchMoney(timeout=timeout)
+    client.set_token(csrf_token)
+    headers = _common_headers(state_dir)
+    headers.update({"Cookie": cookie_header.strip(), "x-csrftoken": csrf_token})
+    client._headers.pop("Authorization", None)
+    client._headers.update(headers)
+    return client
+
+
 def build_session_client(
     session_cookie: str,
     csrf_token: str,
     state_dir: Path,
     timeout: int = 30,
-    cookie_name: str = "sessionid",
+    cookie_name: str = "session_id",
 ) -> MonarchMoney:
     """Client authenticated by an existing browser session.
 

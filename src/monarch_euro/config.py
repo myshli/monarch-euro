@@ -86,6 +86,7 @@ class Config:
     monarch_session_cookie: str
     monarch_csrf_token: str
     monarch_cookie_name: str
+    monarch_cookie_header: str
 
     # --- Behaviour ---
     target_currency: str
@@ -222,7 +223,8 @@ def load_config(dotenv: Path | None = None) -> Config:
         monarch_token=os.environ.get("MONARCH_TOKEN", "").strip(),
         monarch_session_cookie=os.environ.get("MONARCH_SESSION_COOKIE", "").strip(),
         monarch_csrf_token=os.environ.get("MONARCH_CSRF_TOKEN", "").strip(),
-        monarch_cookie_name=os.environ.get("MONARCH_COOKIE_NAME", "sessionid").strip(),
+        monarch_cookie_name=os.environ.get("MONARCH_COOKIE_NAME", "session_id").strip(),
+        monarch_cookie_header=os.environ.get("MONARCH_COOKIE_HEADER", "").strip(),
         target_currency=os.environ.get("TARGET_CURRENCY", "USD").upper(),
         fx_base_url=os.environ.get("FX_BASE_URL", "https://api.frankfurter.dev/v1").rstrip("/"),
         note_original_amount=_flag("NOTE_ORIGINAL_AMOUNT", True),

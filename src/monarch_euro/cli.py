@@ -118,6 +118,7 @@ def cmd_doctor(config: Config, args: argparse.Namespace) -> int:
             session_cookie=config.monarch_session_cookie,
             csrf_token=config.monarch_csrf_token,
             cookie_name=config.monarch_cookie_name,
+            cookie_header=config.monarch_cookie_header,
             dry_run=True,
         ) as monarch:
             monarch.refresh_metadata()

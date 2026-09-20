@@ -41,6 +41,10 @@ class ApplicationNotActiveError(EnableBankingError):
     """The Enable Banking application has not been activated yet."""
 
 
+class AspspRateLimitedError(EnableBankingError):
+    """The bank's own PSD2 quota is exhausted for now."""
+
+
 class ConsentExpiredError(EnableBankingError):
     """The PSU consent lapsed and the bank must be re-authorized in a browser."""
 
@@ -140,6 +144,16 @@ class EnableBankingClient:
             raise ConsentExpiredError(
                 f"{method} {path} returned {resp.status_code}: {detail}. If this is a "
                 f"consent problem, re-run `monarch-euro link` for the affected bank."
+            )
+        if resp.status_code == 429:
+            # PSD2 caps unattended account access at four calls per day per
+            # bank. This is the bank's limit, not Enable Banking's, and it
+            # resets on its own - retrying sooner only wastes the next day's
+            # quota.
+            raise AspspRateLimitedError(
+                f"{path}: the bank's PSD2 rate limit is exhausted. Regulation caps "
+                f"unattended access at about four calls per day per bank; it resets "
+                f"within 24 hours. Nothing is wrong with the setup."
             )
         if resp.status_code >= 400:
             raise EnableBankingError(
