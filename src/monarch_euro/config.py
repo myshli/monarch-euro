@@ -75,6 +75,7 @@ class Config:
     # --- Wise (source, via Wise's own API) ---
     wise_token: str
     wise_private_key_path: Path | None
+    wise_profile_id: str
     wise_accounts: list["WiseAccount"]
 
     # --- Monarch (sink) ---
@@ -205,6 +206,7 @@ def load_config(dotenv: Path | None = None) -> Config:
         eb_private_key_path=key_path,
         wise_token=os.environ.get("WISE_TOKEN", "").strip(),
         wise_private_key_path=wise_key_path,
+        wise_profile_id=os.environ.get("WISE_PROFILE_ID", "").strip(),
         wise_accounts=wise_accounts,
         eb_base_url=os.environ.get("EB_BASE_URL", "https://api.enablebanking.com").rstrip("/"),
         eb_redirect_url=eb_redirect_url,

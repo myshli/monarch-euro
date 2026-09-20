@@ -277,12 +277,27 @@ def _sync_wise(
         if not profiles:
             raise WiseError("Wise returned no profiles for this token.")
 
-        personal = next(
-            (p for p in profiles if str(p.get("type", "")).lower() == "personal"),
-            profiles[0],
-        )
-        profile_id = personal.get("id")
-        log.info("Wise profile %s (%s)", profile_id, personal.get("type", "?"))
+        if config.wise_profile_id:
+            # Pinned explicitly: never silently fall through to another
+            # profile (a business one, say) if Wise reorders or renames.
+            profile = next(
+                (p for p in profiles if str(p.get("id")) == config.wise_profile_id), None
+            )
+            if profile is None:
+                available = ", ".join(
+                    "{}({})".format(p.get("id"), p.get("type")) for p in profiles
+                )
+                raise WiseError(
+                    f"WISE_PROFILE_ID {config.wise_profile_id} is not on this token. "
+                    f"Available: {available}"
+                )
+        else:
+            profile = next(
+                (p for p in profiles if str(p.get("type", "")).lower() == "personal"),
+                profiles[0],
+            )
+        profile_id = profile.get("id")
+        log.info("Wise profile %s (%s)", profile_id, profile.get("type", "?"))
 
         balances = wise.balances(profile_id)
         by_currency = {
