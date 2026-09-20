@@ -161,7 +161,7 @@ The likeliest cause is a second machine syncing with its own ledger.
 |---|---|---|
 | When alerted (weeks) | Refresh the Monarch session | `monarch-cookie` |
 | **~March 2027**, then every 180 days | Re-link N26 | `link n26` |
-| Occasionally | Add categorization rules | edit `state/rules.json` |
+| Occasionally | Add categorization rules | edit `rules.json` |
 | Rarely | Update the code | `git pull` + reinstall |
 
 Nothing else is scheduled. There is no log rotation to mind (journald handles
