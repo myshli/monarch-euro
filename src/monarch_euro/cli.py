@@ -65,6 +65,47 @@ def cmd_doctor(config: Config, args: argparse.Namespace) -> int:
         print(f"  FAIL  {exc}")
         ok = False
 
+    print("\nWise")
+    if not config.wise_accounts:
+        print("  skipped (WISE_ACCOUNTS not set)")
+    elif not config.wise_token:
+        print("  FAIL  WISE_ACCOUNTS is set but WISE_TOKEN is empty")
+        ok = False
+    else:
+        try:
+            with WiseClient(
+                token=config.wise_token, private_key_path=config.wise_private_key_path
+            ) as wise:
+                profiles = wise.profiles()
+                profile_id = config.wise_profile_id or next(
+                    (str(p.get("id")) for p in profiles
+                     if str(p.get("type", "")).lower() == "personal"),
+                    str(profiles[0].get("id")),
+                )
+                chosen = next((p for p in profiles if str(p.get("id")) == str(profile_id)), None)
+                if chosen is None:
+                    print(f"  FAIL  WISE_PROFILE_ID {profile_id} not on this token "
+                          f"(have {', '.join(str(p.get('id')) for p in profiles)})")
+                    ok = False
+                else:
+                    print(f"  OK  profile {profile_id} ({chosen.get('type')})"
+                          f"{'  [pinned]' if config.wise_profile_id else '  [auto-selected]'}")
+                    balances = {str(b.get("currency", "")).upper(): b
+                                for b in wise.balances(profile_id)}
+                    for account in config.wise_accounts:
+                        b = balances.get(account.currency)
+                        if b is None:
+                            print(f"    - {account.currency}: MISSING on this profile "
+                                  f"(have: {', '.join(sorted(balances)) or 'none'})")
+                            ok = False
+                        else:
+                            amount = (b.get("amount") or {}).get("value")
+                            print(f"    - {account.currency}: balance {amount} "
+                                  f"-> Monarch {account.monarch_account_name!r}")
+        except Exception as exc:
+            print(f"  FAIL  {exc}")
+            ok = False
+
     print("\nMonarch")
     try:
         with MonarchSink(
@@ -72,6 +113,7 @@ def cmd_doctor(config: Config, args: argparse.Namespace) -> int:
             password=config.monarch_password,
             mfa_secret=config.monarch_mfa_secret,
             session_path=config.monarch_session_path,
+            token=config.monarch_token,
             dry_run=True,
         ) as monarch:
             monarch.refresh_metadata()

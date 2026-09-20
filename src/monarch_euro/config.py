@@ -82,6 +82,7 @@ class Config:
     monarch_email: str
     monarch_password: str
     monarch_mfa_secret: str
+    monarch_token: str
 
     # --- Behaviour ---
     target_currency: str
@@ -215,6 +216,7 @@ def load_config(dotenv: Path | None = None) -> Config:
         monarch_email=os.environ.get("MONARCH_EMAIL", "").strip(),
         monarch_password=os.environ.get("MONARCH_PASSWORD", "").strip(),
         monarch_mfa_secret=os.environ.get("MONARCH_MFA_SECRET", "").strip(),
+        monarch_token=os.environ.get("MONARCH_TOKEN", "").strip(),
         target_currency=os.environ.get("TARGET_CURRENCY", "USD").upper(),
         fx_base_url=os.environ.get("FX_BASE_URL", "https://api.frankfurter.dev/v1").rstrip("/"),
         note_original_amount=_flag("NOTE_ORIGINAL_AMOUNT", True),

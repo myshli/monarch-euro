@@ -22,6 +22,7 @@ from typing import Any, Coroutine, TypeVar
 from monarchmoney import MonarchMoney, RequireMFAException
 
 from ..models import ConvertedTransaction
+from .monarch_compat import build_client, patch_endpoints
 
 log = logging.getLogger(__name__)
 
@@ -45,6 +46,7 @@ class MonarchSink:
         password: str,
         mfa_secret: str,
         session_path: Path,
+        token: str = "",
         default_category: str = "Uncategorized",
         update_balance: bool = True,
         dry_run: bool = False,
@@ -53,13 +55,19 @@ class MonarchSink:
         self.password = password
         self.mfa_secret = mfa_secret
         self.session_path = session_path
+        self.token = token
         self.default_category = default_category
         self.update_balance = update_balance
         self.dry_run = dry_run
 
         self._loop = asyncio.new_event_loop()
         session_path.parent.mkdir(parents=True, exist_ok=True)
-        self._mm = MonarchMoney(session_file=str(session_path))
+        patch_endpoints()
+        if token:
+            self._mm = build_client(token, session_path.parent)
+            self._mm._session_file = str(session_path)
+        else:
+            self._mm = MonarchMoney(session_file=str(session_path))
         self._categories: dict[str, str] = {}
         self._accounts: dict[str, str] = {}
         self._logged_in = False
@@ -89,6 +97,13 @@ class MonarchSink:
         needs no human present.
         """
         if self._logged_in:
+            return
+
+        # A browser-session token skips login entirely, which is the only
+        # route that still works: Monarch now answers programmatic password
+        # logins with CAPTCHA_REQUIRED.
+        if self.token:
+            self._logged_in = True
             return
 
         # MONARCH_MFA_SECRET is deliberately not required: an account without
@@ -124,6 +139,13 @@ class MonarchSink:
                 "code in Monarch's security settings), not a one-time code."
             ) from exc
         except Exception as exc:
+            if "CAPTCHA" in str(exc).upper():
+                raise MonarchError(
+                    "Monarch requires a CAPTCHA for programmatic sign-in, so "
+                    "password login cannot work. Sign in at app.monarch.com in a "
+                    "browser and put that session's bearer token in MONARCH_TOKEN "
+                    "instead - see README, 'Monarch authentication'."
+                ) from exc
             if "429" in str(exc):
                 # Retrying is what caused this; say so rather than inviting more.
                 raise MonarchError(
