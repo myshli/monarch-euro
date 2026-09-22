@@ -46,6 +46,15 @@ class SourceTransaction:
     this ordinal by the bank's own ordering, which is stable for booked
     transactions, so each gets a distinct identity that survives re-fetching.
     """
+    ledger_account: str | None = None
+    """Account identity for the dedupe ledger, when it differs from `account_uid`.
+
+    Enable Banking issues a new account uid with every session, so the same
+    N26 account has a different uid after each consent renewal. Keys built on
+    the uid would all change at the renewal and the sync would import the
+    whole lookback window a second time. This holds an identity that survives
+    re-linking; `account_uid` stays the handle for API calls.
+    """
 
     def dedupe_key(self) -> str:
         """Stable identity for this transaction.
@@ -55,11 +64,22 @@ class SourceTransaction:
         back to a content hash plus an occurrence ordinal. The key deliberately
         excludes `pending`, so a transaction keeps its identity when it settles.
         """
+        return self._key(self.ledger_account or self.account_uid)
+
+    def legacy_dedupe_key(self) -> str:
+        """The key this transaction had before ledger identities existed.
+
+        Used only to adopt existing ledger rows under their stable key. It is
+        reproducible only while the session that posted them is still current.
+        """
+        return self._key(self.account_uid)
+
+    def _key(self, account: str) -> str:
         if self.reference:
-            return f"{self.account_uid}:ref:{self.reference}"
+            return f"{account}:ref:{self.reference}"
         material = "|".join(
             [
-                self.account_uid,
+                account,
                 self.booked_on.isoformat(),
                 f"{self.amount:.2f}",
                 self.currency,
@@ -68,7 +88,7 @@ class SourceTransaction:
             ]
         )
         digest = hashlib.sha256(material.encode("utf-8")).hexdigest()[:32]
-        return f"{self.account_uid}:hash:{digest}:{self.occurrence}"
+        return f"{account}:hash:{digest}:{self.occurrence}"
 
 
 @dataclass(frozen=True)

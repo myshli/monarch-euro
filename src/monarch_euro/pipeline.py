@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import sqlite3
 from contextlib import nullcontext
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -57,7 +59,8 @@ def refresh_accounts(
 ) -> None:
     """Re-read the account list for a session and persist it."""
     payload = client.get_session(session_id)
-    for account in extract_accounts(payload):
+    accounts = extract_accounts(payload)
+    for account in accounts:
         store.put_account(
             account_uid=account["uid"],
             link_key=link_key,
@@ -66,7 +69,45 @@ def refresh_accounts(
             currency=account.get("currency"),
             monarch_account_id=None,
             monarch_account_name=None,
+            identity=account.get("identity"),
         )
+    dropped = store.retain_accounts(link_key, {a["uid"] for a in accounts})
+    if dropped:
+        log.info("[%s] dropped %d account uid(s) from an earlier session", link_key, dropped)
+
+
+def ledger_account(link_key: str, identity: str | None) -> str | None:
+    """A ledger identity for a bank account that survives re-linking."""
+    if not identity:
+        return None
+    return f"{link_key}:{hashlib.sha256(identity.encode('utf-8')).hexdigest()[:20]}"
+
+
+def with_stable_keys(
+    store: Store, link_key: str, account: sqlite3.Row, transactions: list[SourceTransaction]
+) -> list[SourceTransaction]:
+    """Key transactions on the account's stable identity.
+
+    Rows posted before stable identities existed are re-keyed in place, so
+    they are recognised as already imported. That adoption works only while
+    the uid that posted them is still the current one, and each run makes it
+    permanent for everything in its window.
+
+    Without an identity the transactions keep uid-based keys: the same
+    behaviour as before, no worse.
+    """
+    stable = ledger_account(link_key, account["identity"])
+    if stable is None:
+        log.warning("[%s] no stable identity for account %s; keys follow its uid",
+                    link_key, account["account_uid"][:8])
+        return transactions
+
+    keyed = [replace(txn, ledger_account=stable) for txn in transactions]
+    adopted = sum(store.migrate_key(txn.legacy_dedupe_key(), txn.dedupe_key()) for txn in keyed)
+    if adopted:
+        log.info("[%s] re-keyed %d ledger row(s) to the stable account identity",
+                 link_key, adopted)
+    return keyed
 
 
 def sync(config: Config) -> SyncResult:
@@ -250,6 +291,7 @@ def _sync_one_link(
             date_from=date_from,
             include_pending=config.include_pending,
         )
+        transactions = with_stable_keys(store, link_key, account, transactions)
         result.fetched += len(transactions)
         if not transactions:
             continue

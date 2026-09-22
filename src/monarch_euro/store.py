@@ -104,7 +104,14 @@ class Store:
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA foreign_keys=ON")
         self.conn.executescript(SCHEMA)
+        self._migrate()
         self.conn.commit()
+
+    def _migrate(self) -> None:
+        """Bring a database created by an older version up to the schema."""
+        columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(accounts)")}
+        if "identity" not in columns:
+            self.conn.execute("ALTER TABLE accounts ADD COLUMN identity TEXT")
 
     def close(self) -> None:
         self.conn.close()
@@ -246,20 +253,24 @@ class Store:
         currency: str | None,
         monarch_account_id: str | None,
         monarch_account_name: str | None,
+        identity: str | None = None,
     ) -> None:
+        # COALESCE throughout: a session refresh returns bare uids with no
+        # details, and must not blank out what the original link recorded.
         with self.tx() as conn:
             conn.execute(
                 """INSERT INTO accounts
                    (account_uid, link_key, identifier, name, currency,
-                    monarch_account_id, monarch_account_name, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    monarch_account_id, monarch_account_name, updated_at, identity)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(account_uid) DO UPDATE SET
                      link_key=excluded.link_key,
-                     identifier=excluded.identifier,
-                     name=excluded.name,
-                     currency=excluded.currency,
+                     identifier=COALESCE(excluded.identifier, accounts.identifier),
+                     name=COALESCE(excluded.name, accounts.name),
+                     currency=COALESCE(excluded.currency, accounts.currency),
                      monarch_account_id=COALESCE(excluded.monarch_account_id, accounts.monarch_account_id),
                      monarch_account_name=COALESCE(excluded.monarch_account_name, accounts.monarch_account_name),
+                     identity=COALESCE(excluded.identity, accounts.identity),
                      updated_at=excluded.updated_at""",
                 (
                     account_uid,
@@ -270,8 +281,43 @@ class Store:
                     monarch_account_id,
                     monarch_account_name,
                     _now(),
+                    identity,
                 ),
             )
+
+    def retain_accounts(self, link_key: str, uids: set[str]) -> int:
+        """Drop this link's accounts that are not in the current session.
+
+        A re-link issues new uids. The old rows would otherwise stay, and the
+        sync would keep querying a uid whose session is gone, failing the whole
+        bank on every run.
+        """
+        if not uids:
+            return 0
+        placeholders = ",".join("?" * len(uids))
+        with self.tx() as conn:
+            cur = conn.execute(
+                f"DELETE FROM accounts WHERE link_key = ? AND account_uid NOT IN ({placeholders})",
+                (link_key, *sorted(uids)),
+            )
+        return cur.rowcount
+
+    def migrate_key(self, old: str, new: str) -> bool:
+        """Re-key one transaction across every ledger. Returns whether it existed."""
+        if old == new:
+            return False
+        changed = 0
+        with self.tx() as conn:
+            for table in ("posted", "pending_writes", "exported"):
+                cur = conn.execute(
+                    f"UPDATE OR IGNORE {table} SET dedupe_key = ? WHERE dedupe_key = ?",
+                    (new, old),
+                )
+                changed += cur.rowcount
+                # Anything left under the old key already exists under the new one.
+                cur = conn.execute(f"DELETE FROM {table} WHERE dedupe_key = ?", (old,))
+                changed += cur.rowcount
+        return changed > 0
 
     def accounts_for(self, link_key: str) -> list[sqlite3.Row]:
         return list(

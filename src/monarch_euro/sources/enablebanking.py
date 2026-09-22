@@ -354,11 +354,20 @@ def extract_accounts(session_payload: dict) -> list[dict]:
 
     Enable Banking has used both `uid` and `account_id` across API versions,
     and nests the human-readable identifier differently per ASPSP.
+
+    `identity` is Enable Banking's `identification_hash`, which stays the same
+    for an account across sessions while its `uid` does not.
     """
+    hashes = {
+        data.get("uid"): data.get("identification_hash")
+        for data in session_payload.get("accounts_data") or []
+        if isinstance(data, dict)
+    }
     accounts = []
     for item in session_payload.get("accounts", []):
         if isinstance(item, str):
-            accounts.append({"uid": item, "identifier": None, "name": None, "currency": None})
+            accounts.append({"uid": item, "identifier": None, "name": None,
+                             "currency": None, "identity": hashes.get(item)})
             continue
         uid = item.get("uid") or item.get("account_id") or item.get("resource_id")
         if not uid:
@@ -374,6 +383,7 @@ def extract_accounts(session_payload: dict) -> list[dict]:
                 "identifier": identifier,
                 "name": item.get("name") or item.get("product") or item.get("details"),
                 "currency": (item.get("currency") or "").upper() or None,
+                "identity": item.get("identification_hash") or hashes.get(uid),
             }
         )
     return accounts

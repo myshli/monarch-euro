@@ -10,4 +10,4 @@ EnvironmentFile=/opt/monarch-euro/.env
 ExecStart=/bin/bash -c 'curl -s -o /dev/null --max-time 15 \
   "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
   --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
-  --data-urlencode "text=monarch-euro failed to start on $(hostname). Check: journalctl -u monarch-euro -n 50"'
+  --data-urlencode "text=monarch-euro failed to start on %H. Check: journalctl -u monarch-euro -n 50"'

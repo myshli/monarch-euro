@@ -22,9 +22,13 @@ Monarch bumps its client version, `monarch-client-version` is the knob.
 from __future__ import annotations
 
 import logging
+import ssl
 import uuid
 from pathlib import Path
 
+import certifi
+import monarchmoney.monarchmoney as _mm_module
+from gql.transport.aiohttp import AIOHTTPTransport
 from monarchmoney import MonarchMoney
 from monarchmoney.monarchmoney import MonarchMoneyEndpoints
 
@@ -62,11 +66,34 @@ def _stable_device_uuid(state_dir: Path) -> str:
     return generated
 
 
+TLS_CONTEXT = ssl.create_default_context(cafile=certifi.where())
+
+
+class VerifiedTransport(AIOHTTPTransport):
+    """gql's aiohttp transport, with certificate verification switched on.
+
+    gql 3.x defaults this transport to ``ssl=False`` - it warns, then skips
+    certificate verification - and monarchmoney never overrides it. Every
+    GraphQL call, carrying the session cookie and all account data, would
+    otherwise accept any certificate at all.
+
+    certifi's bundle rather than the system store: python.org builds on macOS
+    often ship without system certificates, which would turn this fix into a
+    new failure.
+    """
+
+    def __init__(self, *args, **kwargs):
+        kwargs.setdefault("ssl", TLS_CONTEXT)
+        super().__init__(*args, **kwargs)
+
+
 def patch_endpoints() -> None:
-    """Point the library at the host Monarch actually serves."""
+    """Point the library at the host Monarch serves, over verified TLS."""
     if MonarchMoneyEndpoints.BASE_URL != API_BASE:
         log.debug("Repointing monarchmoney at %s", API_BASE)
         MonarchMoneyEndpoints.BASE_URL = API_BASE
+    # monarchmoney builds its transport from this module-level name.
+    _mm_module.AIOHTTPTransport = VerifiedTransport
 
 
 def _common_headers(state_dir: Path) -> dict[str, str]:

@@ -10,6 +10,8 @@ dependencies = [
     # monarchmoney declares gql>=3.4 with no upper bound, but gql 4.0
     # changed Client.execute_async and breaks every GraphQL call.
     "gql[aiohttp]>=3.5,<4",
+    # CA bundle for verifying Monarch's certificate; see sinks/monarch_compat.py.
+    "certifi>=2024.2.2",
 ]
 
 [project.scripts]

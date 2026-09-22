@@ -12,7 +12,7 @@ from .categorize import write_default_rules
 from .notify import format_failure, send
 from .config import Config, ConfigError, load_config
 from .envfile import EnvFileError, parse_cookie_header, update as env_update
-from .pipeline import _rules_path, refresh_accounts, sync
+from .pipeline import _rules_path, refresh_accounts, sync, with_stable_keys
 from .sinks.csvfile import CsvSink
 from .sinks.monarch import MonarchSink
 from .sources.enablebanking import EnableBankingClient, extract_accounts
@@ -248,7 +248,11 @@ def cmd_link(config: Config, args: argparse.Namespace) -> int:
                     currency=account.get("currency"),
                     monarch_account_id=None,
                     monarch_account_name=link.monarch_account_name,
+                    identity=account.get("identity"),
                 )
+            # A re-link replaces the previous session's uids; keeping them
+            # would have the sync query accounts whose session is gone.
+            store.retain_accounts(link.key, {a["uid"] for a in accounts})
 
     print(f"\nLinked {link.key} -> session {session_id}")
     for account in accounts:
@@ -534,11 +538,15 @@ def cmd_export(config: Config, args: argparse.Namespace) -> int:
             # One bank being unavailable must not discard the others' data.
             try:
                 with _client(config) as eb:
+                    # Same account identities and keys as sync, or an export
+                    # would disagree with the ledger about what is imported.
+                    refresh_accounts(eb, store, link.key, session_row["session_id"])
                     for account in store.accounts_for(link.key):
                         txns = eb.transactions(
                             link.key, account["account_uid"], date_from,
                             include_pending=config.include_pending,
                         )
+                        txns = with_stable_keys(store, link.key, account, txns)
                         batches.append((link.key, link.monarch_account_name, txns))
             except Exception as exc:
                 problems.append(f"[{link.key}] {exc}")

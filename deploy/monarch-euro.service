@@ -2,6 +2,10 @@
 Description=Sync European bank transactions into Monarch Money
 After=network-online.target
 Wants=network-online.target
+# A crash before Python starts (bad venv, missing env file) never reaches the
+# in-process notifier, so systemd reports those itself. This is a [Unit] key;
+# placed under [Service] it is silently ignored.
+OnFailure=monarch-euro-failure.service
 
 [Service]
 Type=oneshot
@@ -22,10 +26,6 @@ ProtectKernelTunables=true
 ProtectControlGroups=true
 RestrictAddressFamilies=AF_INET AF_INET6
 MemoryDenyWriteExecute=true
-
-# A crash before Python starts (bad venv, missing env file) never reaches the
-# in-process notifier, so systemd reports those itself.
-OnFailure=monarch-euro-failure.service
 
 [Install]
 WantedBy=multi-user.target

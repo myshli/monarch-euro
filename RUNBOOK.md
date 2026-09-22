@@ -91,6 +91,21 @@ ssh root@167.99.150.73 "cd /opt/monarch-euro && sudo -u monarch .venv/bin/monarc
 Mind the single quotes: the URL contains `&` and your shell will otherwise cut
 it short.
 
+Re-linking is safe to repeat. Every link gets new account uids from Enable
+Banking, so the ledger keys N26 on the account's `identification_hash`, which
+stays the same across sessions. Transactions already imported stay recognised,
+and the previous session's uids are dropped.
+
+### "Wise token invalid or revoked"
+
+The Wise personal token stopped working, usually because it was revoked or
+deleted in Wise. Make a new one in Wise under **Settings → API tokens**, then
+update this machine and the sync host together:
+
+```bash
+monarch-euro set-secret WISE_TOKEN --host root@167.99.150.73
+```
+
 ### "Bank quota exhausted - resets within 24h, no action needed"
 
 Do nothing. PSD2 allows about four unattended calls per day per bank; the next

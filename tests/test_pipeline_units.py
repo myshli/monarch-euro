@@ -134,7 +134,8 @@ def test_extract_accounts_handles_nested_account_id():
                              "currency": "eur", "name": "Main"}]}
     accounts = extract_accounts(payload)
     assert accounts == [
-        {"uid": "u1", "identifier": "DE89370400440532013000", "name": "Main", "currency": "EUR"}
+        {"uid": "u1", "identifier": "DE89370400440532013000", "name": "Main", "currency": "EUR",
+         "identity": None}
     ]
 
 
